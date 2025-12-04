@@ -15,6 +15,8 @@ function App() {
   const [userInfo, setUserInfo] = useState(null) // Informações do perfil (role, condominio_id, unidade)
   const [showSignup, setShowSignup] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [hasError, setHasError] = useState(false)
+  const [errorMessage, setErrorMessage] = useState(null)
   // Estado para dados do QR Code (deve estar antes de qualquer return)
   const [qrCodeData, setQrCodeData] = useState(() => {
     try {
@@ -241,6 +243,44 @@ function App() {
     }
   }
 
+  // Se houver erro crítico, mostra mensagem de erro
+  if (hasError) {
+    return (
+      <div className="App">
+        <div style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100vh',
+          padding: '20px',
+          textAlign: 'center',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white'
+        }}>
+          <h2>Erro ao carregar a aplicação</h2>
+          <p style={{ marginTop: '10px', marginBottom: '20px' }}>
+            {errorMessage || 'Ocorreu um erro inesperado. Por favor, recarregue a página.'}
+          </p>
+          <button 
+            onClick={() => window.location.reload()} 
+            style={{
+              padding: '10px 20px',
+              backgroundColor: 'white',
+              color: '#667eea',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}
+          >
+            Recarregar Página
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <div className="App">
@@ -308,23 +348,63 @@ function App() {
     }
   }
 
-  return (
-    <div className="App">
-      {!isAuthenticated ? (
-        showSignup ? (
-          <Signup 
-            onSignup={handleLogin} 
-            onShowLogin={() => setShowSignup(false)}
-            qrCodeData={qrCodeData}
-          />
+  try {
+    return (
+      <div className="App">
+        {!isAuthenticated ? (
+          showSignup ? (
+            <Signup 
+              onSignup={handleLogin} 
+              onShowLogin={() => setShowSignup(false)}
+              qrCodeData={qrCodeData}
+            />
+          ) : (
+            <Login onLogin={handleLogin} onShowSignup={() => setShowSignup(true)} />
+          )
         ) : (
-          <Login onLogin={handleLogin} onShowSignup={() => setShowSignup(true)} />
-        )
-      ) : (
-        renderDashboard()
-      )}
-    </div>
-  )
+          renderDashboard()
+        )}
+      </div>
+    )
+  } catch (error) {
+    console.error('Erro crítico no render do App:', error)
+    setHasError(true)
+    setErrorMessage(error.message || 'Erro ao renderizar aplicação')
+    return (
+      <div className="App">
+        <div style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          justifyContent: 'center', 
+          alignItems: 'center', 
+          height: '100vh',
+          padding: '20px',
+          textAlign: 'center',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white'
+        }}>
+          <h2>Erro ao carregar a aplicação</h2>
+          <p style={{ marginTop: '10px', marginBottom: '20px' }}>
+            {error.message || 'Ocorreu um erro inesperado. Por favor, recarregue a página.'}
+          </p>
+          <button 
+            onClick={() => window.location.reload()} 
+            style={{
+              padding: '10px 20px',
+              backgroundColor: 'white',
+              color: '#667eea',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}
+          >
+            Recarregar Página
+          </button>
+        </div>
+      </div>
+    )
+  }
 }
 
 export default App
