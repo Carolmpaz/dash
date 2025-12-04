@@ -276,80 +276,105 @@ function Dashboard({ onLogout, user, userInfo }) {
 
   // Conexão MQTT
   useEffect(() => {
-    const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
-      clientId: 'dashboard_' + Math.random().toString(16).substr(2, 8),
-      reconnectPeriod: 5000,
-      connectTimeout: 10000
-    })
+    let client = null
+    
+    try {
+      client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
+        clientId: 'dashboard_' + Math.random().toString(16).substr(2, 8),
+        reconnectPeriod: 5000,
+        connectTimeout: 10000
+      })
 
-    clientRef.current = client
+      clientRef.current = client
 
-    client.on('connect', () => {
-      console.log('Conectado ao broker MQTT')
-      setIsConnected(true)
-      client.subscribe('carolinepaz/sensores', (err) => {
-        if (err) {
-          console.error('Erro ao subscrever:', err)
-        } else {
-          console.log('Subscrito ao tópico: carolinepaz/sensores')
+      client.on('connect', () => {
+        console.log('Conectado ao broker MQTT')
+        setIsConnected(true)
+        try {
+          client.subscribe('carolinepaz/sensores', (err) => {
+            if (err) {
+              console.error('Erro ao subscrever:', err)
+            } else {
+              console.log('Subscrito ao tópico: carolinepaz/sensores')
+            }
+          })
+        } catch (err) {
+          console.error('Erro ao configurar subscription:', err)
         }
       })
-    })
 
-    client.on('message', (topic, message) => {
-      try {
-        const data = JSON.parse(message.toString())
-        const processedData = {
-          temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
-          temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
-          deltaT: data.deltaT || 0,
-          vazao_L_s: data.vazao_L_s || 0,
-          potencia_kW: data.potencia_kW || 0,
-          energia_kWh: data.energia_kWh || 0
+      client.on('message', (topic, message) => {
+        try {
+          const data = JSON.parse(message.toString())
+          const processedData = {
+            temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
+            temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
+            deltaT: data.deltaT || 0,
+            vazao_L_s: data.vazao_L_s || 0,
+            potencia_kW: data.potencia_kW || 0,
+            energia_kWh: data.energia_kWh || 0
+          }
+          
+          setSensorData(processedData)
+          
+          // Adiciona ao histórico com timestamp
+          const timestamp = new Date().toLocaleTimeString('pt-BR')
+          const historyPoint = {
+            time: timestamp,
+            temp_ida: processedData.temp_ida,
+            temp_retorno: processedData.temp_retorno,
+            deltaT: processedData.deltaT,
+            vazao: processedData.vazao_L_s,
+            potencia: processedData.potencia_kW,
+            energia: processedData.energia_kWh,
+            gas: (processedData.potencia_kW * 0.1)
+          }
+          
+          setHistoryData(prev => {
+            const newData = [...prev, historyPoint]
+            return newData.slice(-maxHistoryPoints) // Mantém apenas os últimos N pontos
+          })
+          
+          // Salva no banco de dados (não bloqueia se falhar)
+          saveToDatabase(processedData).catch(err => {
+            console.error('Erro ao salvar no banco (não crítico):', err)
+          })
+          
+          console.log('Dados recebidos:', processedData)
+        } catch (error) {
+          console.error('Erro ao parsear JSON:', error)
         }
-        
-        setSensorData(processedData)
-        
-        // Adiciona ao histórico com timestamp
-        const timestamp = new Date().toLocaleTimeString('pt-BR')
-        const historyPoint = {
-          time: timestamp,
-          temp_ida: processedData.temp_ida,
-          temp_retorno: processedData.temp_retorno,
-          deltaT: processedData.deltaT,
-          vazao: processedData.vazao_L_s,
-          potencia: processedData.potencia_kW,
-          energia: processedData.energia_kWh,
-          gas: (processedData.potencia_kW * 0.1)
-        }
-        
-        setHistoryData(prev => {
-          const newData = [...prev, historyPoint]
-          return newData.slice(-maxHistoryPoints) // Mantém apenas os últimos N pontos
-        })
-        
-        // Salva no banco de dados
-        saveToDatabase(processedData)
-        
-        console.log('Dados recebidos:', processedData)
-      } catch (error) {
-        console.error('Erro ao parsear JSON:', error)
-      }
-    })
+      })
 
-    client.on('error', (error) => {
-      console.error('Erro MQTT:', error)
-      setIsConnected(false)
-    })
+      client.on('error', (error) => {
+        console.error('Erro MQTT:', error)
+        setIsConnected(false)
+        // Não propaga o erro para não quebrar a aplicação
+      })
 
-    client.on('close', () => {
-      console.log('Conexão MQTT fechada')
+      client.on('close', () => {
+        console.log('Conexão MQTT fechada')
+        setIsConnected(false)
+      })
+
+      client.on('offline', () => {
+        console.log('Cliente MQTT offline')
+        setIsConnected(false)
+      })
+
+    } catch (error) {
+      console.error('Erro ao inicializar conexão MQTT:', error)
       setIsConnected(false)
-    })
+      // Continua mesmo se a conexão MQTT falhar
+    }
 
     return () => {
       if (client) {
-        client.end()
+        try {
+          client.end()
+        } catch (err) {
+          console.error('Erro ao fechar conexão MQTT:', err)
+        }
       }
     }
   }, [])

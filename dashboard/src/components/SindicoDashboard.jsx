@@ -155,55 +155,89 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
   }, [userInfo, deviceId])
 
   useEffect(() => {
-    const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
-      clientId: 'dashboard_' + Math.random().toString(16).substr(2, 8),
-      reconnectPeriod: 5000,
-      connectTimeout: 10000
-    })
-    clientRef.current = client
-    client.on('connect', () => {
-      setIsConnected(true)
-      client.subscribe('carolinepaz/sensores', (err) => {
-        if (err) console.error('Erro ao subscrever:', err)
+    let client = null
+    
+    try {
+      client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
+        clientId: 'dashboard_' + Math.random().toString(16).substr(2, 8),
+        reconnectPeriod: 5000,
+        connectTimeout: 10000
       })
-    })
-    client.on('message', (topic, message) => {
-      try {
-        const data = JSON.parse(message.toString())
-        const processedData = {
-          temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
-          temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
-          deltaT: data.deltaT || 0,
-          vazao_L_s: data.vazao_L_s || 0,
-          potencia_kW: data.potencia_kW || 0,
-          energia_kWh: data.energia_kWh || 0
+      clientRef.current = client
+      
+      client.on('connect', () => {
+        setIsConnected(true)
+        try {
+          client.subscribe('carolinepaz/sensores', (err) => {
+            if (err) console.error('Erro ao subscrever:', err)
+          })
+        } catch (err) {
+          console.error('Erro ao configurar subscription:', err)
         }
-        setSensorData(processedData)
-        const timestamp = new Date().toLocaleTimeString('pt-BR')
-        const historyPoint = {
-          time: timestamp,
-          temp_ida: processedData.temp_ida,
-          temp_retorno: processedData.temp_retorno,
-          deltaT: processedData.deltaT,
-          vazao: processedData.vazao_L_s,
-          potencia: processedData.potencia_kW,
-          energia: processedData.energia_kWh,
-          gas: (processedData.potencia_kW * 0.1)
+      })
+      
+      client.on('message', (topic, message) => {
+        try {
+          const data = JSON.parse(message.toString())
+          const processedData = {
+            temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
+            temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
+            deltaT: data.deltaT || 0,
+            vazao_L_s: data.vazao_L_s || 0,
+            potencia_kW: data.potencia_kW || 0,
+            energia_kWh: data.energia_kWh || 0
+          }
+          setSensorData(processedData)
+          const timestamp = new Date().toLocaleTimeString('pt-BR')
+          const historyPoint = {
+            time: timestamp,
+            temp_ida: processedData.temp_ida,
+            temp_retorno: processedData.temp_retorno,
+            deltaT: processedData.deltaT,
+            vazao: processedData.vazao_L_s,
+            potencia: processedData.potencia_kW,
+            energia: processedData.energia_kWh,
+            gas: (processedData.potencia_kW * 0.1)
+          }
+          setHistoryData(prev => {
+            const newData = [...prev, historyPoint]
+            return newData.slice(-maxHistoryPoints)
+          })
+          saveToDatabase(processedData).catch(err => {
+            console.error('Erro ao salvar no banco (não crítico):', err)
+          })
+        } catch (error) {
+          console.error('Erro ao parsear JSON:', error)
         }
-        setHistoryData(prev => {
-          const newData = [...prev, historyPoint]
-          return newData.slice(-maxHistoryPoints)
-        })
-        saveToDatabase(processedData)
-      } catch (error) {
-        console.error('Erro ao parsear JSON:', error)
-      }
-    })
-    client.on('error', (error) => {
+      })
+      
+      client.on('error', (error) => {
+        console.error('Erro MQTT:', error)
+        setIsConnected(false)
+      })
+      
+      client.on('close', () => {
+        console.log('Conexão MQTT fechada')
+        setIsConnected(false)
+      })
+      
+      client.on('offline', () => {
+        console.log('Cliente MQTT offline')
+        setIsConnected(false)
+      })
+    } catch (error) {
+      console.error('Erro ao inicializar conexão MQTT:', error)
       setIsConnected(false)
-    })
+    }
+    
     return () => {
-      if (client) client.end()
+      if (client) {
+        try {
+          client.end()
+        } catch (err) {
+          console.error('Erro ao fechar conexão MQTT:', err)
+        }
+      }
     }
   }, [])
 

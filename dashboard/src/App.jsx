@@ -210,13 +210,24 @@ function App() {
   }, [])
 
   const handleLogin = async (userData) => {
-    setUser(userData)
-    setIsAuthenticated(true)
-    setShowSignup(false)
-    // Força o recarregamento do userInfo após login
-    if (userData?.id) {
-      console.log('Recarregando userInfo após login para usuário:', userData.id)
-      await loadUserInfo(userData.id)
+    try {
+      setUser(userData)
+      setIsAuthenticated(true)
+      setShowSignup(false)
+      // Força o recarregamento do userInfo após login
+      if (userData?.id) {
+        console.log('Recarregando userInfo após login para usuário:', userData.id)
+        // Não bloqueia se loadUserInfo falhar
+        loadUserInfo(userData.id).catch(err => {
+          console.error('Erro ao carregar userInfo após login:', err)
+          // Define valores padrão para não travar
+          setUserInfo({ role: null, condominio_id: null, unidade: null, is_sindico: false })
+        })
+      }
+    } catch (error) {
+      console.error('Erro no handleLogin:', error)
+      // Garante que a aplicação não trave
+      setUserInfo({ role: null, condominio_id: null, unidade: null, is_sindico: false })
     }
   }
 
@@ -242,52 +253,58 @@ function App() {
 
   // Função para renderizar o dashboard apropriado baseado no role
   const renderDashboard = () => {
-    // Debug: log das informações do usuário
-    console.log('========================================')
-    console.log('RENDERIZANDO DASHBOARD')
-    console.log('userInfo completo:', JSON.stringify(userInfo, null, 2))
-    console.log('userInfo.role:', userInfo?.role)
-    console.log('userInfo.is_sindico:', userInfo?.is_sindico)
-    console.log('Tipo de is_sindico:', typeof userInfo?.is_sindico)
-    console.log('user.id:', user?.id)
-    console.log('========================================')
-    
-    if (!userInfo || !userInfo.role) {
-      console.log('⚠️ userInfo ou role não disponível, usando Dashboard padrão (Comgás)')
+    try {
+      // Debug: log das informações do usuário
+      console.log('========================================')
+      console.log('RENDERIZANDO DASHBOARD')
+      console.log('userInfo completo:', JSON.stringify(userInfo, null, 2))
+      console.log('userInfo.role:', userInfo?.role)
+      console.log('userInfo.is_sindico:', userInfo?.is_sindico)
+      console.log('Tipo de is_sindico:', typeof userInfo?.is_sindico)
+      console.log('user.id:', user?.id)
+      console.log('========================================')
+      
+      if (!userInfo || !userInfo.role) {
+        console.log('⚠️ userInfo ou role não disponível, usando Dashboard padrão (Comgás)')
+        return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+      }
+
+      // Verifica se é síndico (zelador com flag is_sindico = true)
+      // IMPORTANTE: Verifica explicitamente se is_sindico é true (não apenas truthy)
+      const isSindico = userInfo.role === 'zelador' && userInfo.is_sindico === true
+      console.log('Verificação de síndico:', {
+        role: userInfo.role,
+        is_sindico: userInfo.is_sindico,
+        roleIsZelador: userInfo.role === 'zelador',
+        isSindicoCheck: isSindico
+      })
+
+      if (isSindico) {
+        console.log(' Usuário identificado como Síndico (zelador com is_sindico=true)')
+        return <SindicoDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+      }
+
+      // Se for zelador mas não é síndico
+      if (userInfo.role === 'zelador') {
+        console.log(' Usuário identificado como Zelador (não síndico)')
+        return <ZeladorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+      }
+
+      switch (userInfo.role) {
+        case 'morador':
+          console.log(' Usuário identificado como Morador')
+          return <MoradorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+        case 'comgas':
+          console.log(' Usuário identificado como Comgás')
+          return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+        default:
+          console.log('⚠️ Role desconhecido:', userInfo.role, '- usando Dashboard padrão (Comgás)')
+          return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
+      }
+    } catch (error) {
+      console.error('Erro ao renderizar dashboard:', error)
+      // Em caso de erro, renderiza o dashboard padrão
       return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
-    }
-
-    // Verifica se é síndico (zelador com flag is_sindico = true)
-    // IMPORTANTE: Verifica explicitamente se is_sindico é true (não apenas truthy)
-    const isSindico = userInfo.role === 'zelador' && userInfo.is_sindico === true
-    console.log('Verificação de síndico:', {
-      role: userInfo.role,
-      is_sindico: userInfo.is_sindico,
-      roleIsZelador: userInfo.role === 'zelador',
-      isSindicoCheck: isSindico
-    })
-
-    if (isSindico) {
-      console.log(' Usuário identificado como Síndico (zelador com is_sindico=true)')
-      return <SindicoDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
-    }
-
-    // Se for zelador mas não é síndico
-    if (userInfo.role === 'zelador') {
-      console.log(' Usuário identificado como Zelador (não síndico)')
-      return <ZeladorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
-    }
-
-    switch (userInfo.role) {
-      case 'morador':
-        console.log(' Usuário identificado como Morador')
-        return <MoradorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
-      case 'comgas':
-        console.log(' Usuário identificado como Comgás')
-        return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
-      default:
-        console.log('⚠️ Role desconhecido:', userInfo.role, '- usando Dashboard padrão (Comgás)')
-        return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
     }
   }
 
