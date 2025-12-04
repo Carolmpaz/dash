@@ -348,63 +348,23 @@ function App() {
     }
   }
 
-  try {
-    return (
-      <div className="App">
-        {!isAuthenticated ? (
-          showSignup ? (
-            <Signup 
-              onSignup={handleLogin} 
-              onShowLogin={() => setShowSignup(false)}
-              qrCodeData={qrCodeData}
-            />
-          ) : (
-            <Login onLogin={handleLogin} onShowSignup={() => setShowSignup(true)} />
-          )
+  return (
+    <div className="App">
+      {!isAuthenticated ? (
+        showSignup ? (
+          <Signup 
+            onSignup={handleLogin} 
+            onShowLogin={() => setShowSignup(false)}
+            qrCodeData={qrCodeData}
+          />
         ) : (
-          renderDashboard()
-        )}
-      </div>
-    )
-  } catch (error) {
-    console.error('Erro crítico no render do App:', error)
-    setHasError(true)
-    setErrorMessage(error.message || 'Erro ao renderizar aplicação')
-    return (
-      <div className="App">
-        <div style={{ 
-          display: 'flex', 
-          flexDirection: 'column',
-          justifyContent: 'center', 
-          alignItems: 'center', 
-          height: '100vh',
-          padding: '20px',
-          textAlign: 'center',
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-          color: 'white'
-        }}>
-          <h2>Erro ao carregar a aplicação</h2>
-          <p style={{ marginTop: '10px', marginBottom: '20px' }}>
-            {error.message || 'Ocorreu um erro inesperado. Por favor, recarregue a página.'}
-          </p>
-          <button 
-            onClick={() => window.location.reload()} 
-            style={{
-              padding: '10px 20px',
-              backgroundColor: 'white',
-              color: '#667eea',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '16px'
-            }}
-          >
-            Recarregar Página
-          </button>
-        </div>
-      </div>
-    )
-  }
+          <Login onLogin={handleLogin} onShowSignup={() => setShowSignup(true)} />
+        )
+      ) : (
+        renderDashboard()
+      )}
+    </div>
+  )
 }
 
 export default App

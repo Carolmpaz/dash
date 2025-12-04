@@ -29,18 +29,19 @@ class ErrorBoundary extends React.Component {
           height: '100vh',
           padding: '20px',
           textAlign: 'center',
-          backgroundColor: '#f5f5f5'
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white'
         }}>
-          <h2 style={{ color: '#d32f2f', marginBottom: '20px' }}>Algo deu errado</h2>
-          <p style={{ color: '#666', marginBottom: '20px' }}>
+          <h2 style={{ marginBottom: '20px' }}>Algo deu errado</h2>
+          <p style={{ marginBottom: '20px' }}>
             Ocorreu um erro ao carregar a aplicação. Por favor, recarregue a página.
           </p>
           <button 
             onClick={() => window.location.reload()} 
             style={{
               padding: '10px 20px',
-              backgroundColor: '#1976d2',
-              color: 'white',
+              backgroundColor: 'white',
+              color: '#667eea',
               border: 'none',
               borderRadius: '4px',
               cursor: 'pointer',
@@ -49,15 +50,16 @@ class ErrorBoundary extends React.Component {
           >
             Recarregar Página
           </button>
-          {process.env.NODE_ENV === 'development' && this.state.error && (
+          {this.state.error && (
             <details style={{ marginTop: '20px', textAlign: 'left', maxWidth: '800px' }}>
-              <summary style={{ cursor: 'pointer', color: '#666' }}>Detalhes do erro (desenvolvimento)</summary>
+              <summary style={{ cursor: 'pointer', marginBottom: '10px' }}>Detalhes do erro</summary>
               <pre style={{ 
-                backgroundColor: '#fff', 
+                backgroundColor: 'rgba(255,255,255,0.1)', 
                 padding: '10px', 
                 borderRadius: '4px',
                 overflow: 'auto',
-                fontSize: '12px'
+                fontSize: '12px',
+                color: 'white'
               }}>
                 {this.state.error.toString()}
                 {this.state.errorInfo?.componentStack}
@@ -68,7 +70,7 @@ class ErrorBoundary extends React.Component {
       )
     }
 
-    return this.props.children
+    return this.props.children || <div>Carregando...</div>
   }
 }
 
