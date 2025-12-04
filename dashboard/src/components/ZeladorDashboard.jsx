@@ -176,7 +176,7 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
 
   // Conexão MQTT
   useEffect(() => {
-    const client = mqtt.connect('ws://broker.hivemq.com:8000/mqtt', {
+    const client = mqtt.connect('wss://broker.hivemq.com:8884/mqtt', {
       clientId: 'dashboard_' + Math.random().toString(16).substr(2, 8),
       reconnectPeriod: 5000,
       connectTimeout: 10000
