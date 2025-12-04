@@ -1,0 +1,168 @@
+.qrcode-generator-container {
+  width: 100%;
+  padding: 20px 0;
+}
+
+.qrcode-generator-header {
+  margin-bottom: 30px;
+}
+
+.qrcode-generator-header h2 {
+  color: #004B87;
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 10px 0;
+}
+
+.qrcode-generator-header p {
+  color: #666;
+  font-size: 14px;
+  margin: 0;
+}
+
+.qrcode-generator-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30px;
+}
+
+.moradores-list h3 {
+  color: #004B87;
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 20px 0;
+}
+
+.moradores-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.morador-card {
+  background: white;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.morador-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.morador-info strong {
+  color: #333;
+  font-size: 16px;
+}
+
+.morador-info span {
+  color: #666;
+  font-size: 14px;
+}
+
+.generate-qr-button {
+  padding: 10px 20px;
+  background: #007CB6;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.generate-qr-button:hover {
+  background: #005a8a;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 124, 182, 0.3);
+}
+
+.qrcode-display-section {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+}
+
+.qrcode-display-section h3 {
+  color: #004B87;
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0 0 20px 0;
+}
+
+.qrcode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.qrcode-info {
+  text-align: center;
+  width: 100%;
+}
+
+.qrcode-info p {
+  margin: 10px 0;
+  color: #333;
+}
+
+.qr-instructions {
+  font-size: 12px;
+  color: #666;
+  font-style: italic;
+  margin-top: 15px !important;
+}
+
+.qrcode-image {
+  padding: 20px;
+  background: #f8f9fa;
+  border-radius: 10px;
+}
+
+.download-qr-button {
+  padding: 12px 24px;
+  background: #7FC241;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.download-qr-button:hover {
+  background: #6ba835;
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(127, 194, 65, 0.3);
+}
+
+@media (max-width: 1200px) {
+  .qrcode-generator-content {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .morador-card {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 15px;
+  }
+  
+  .generate-qr-button {
+    width: 100%;
+  }
+}
+
+
+
+

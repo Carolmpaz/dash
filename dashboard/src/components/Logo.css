@@ -1,0 +1,45 @@
+.logo-container {
+  display: inline-block;
+}
+
+.logo-image {
+  height: 50px;
+  width: auto;
+  object-fit: contain;
+  display: block;
+  max-width: 200px;
+}
+
+.logo-text {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  text-transform: lowercase;
+  line-height: 1;
+}
+
+.logo-blue {
+  color: #007CB6;
+}
+
+.logo-green {
+  color: #7FC241;
+  position: relative;
+  display: inline-block;
+}
+
+.logo-g {
+  display: inline-block;
+  position: relative;
+  transform: scaleX(0.85);
+  font-style: italic;
+}
+
+/* Responsividade */
+@media (max-width: 768px) {
+  .logo-text {
+    font-size: 24px;
+  }
+}
+
