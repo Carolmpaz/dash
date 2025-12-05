@@ -3,13 +3,44 @@ import { supabase } from '../supabaseClient'
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 import './ConsumptionHistory.css'
 
-function ConsumptionHistory({ deviceId, userInfo }) {
+function ConsumptionHistory({ deviceId, userInfo, historyData: realTimeHistoryData = [] }) {
   const [startDate, setStartDate] = useState(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
-  const [historyData, setHistoryData] = useState([])
+  const [dbHistoryData, setDbHistoryData] = useState([])
   const [dailyData, setDailyData] = useState([])
   const [loading, setLoading] = useState(false)
   const [chartType, setChartType] = useState('bar') // 'bar' ou 'line'
+
+  // Combina dados do banco com dados em tempo real
+  const combineData = (dbData, realTimeData) => {
+    // Converte dados do banco para o formato padrão
+    const dbFormatted = dbData.map(item => ({
+      time: new Date(item.reading_time).toLocaleTimeString('pt-BR'),
+      date: new Date(item.reading_time).toLocaleDateString('pt-BR'),
+      temp_ida: parseFloat(item.temp_ida) || 0,
+      temp_retorno: parseFloat(item.temp_retorno) || 0,
+      deltaT: parseFloat(item.deltat) || 0,
+      vazao: parseFloat(item.vazao_l_s) || 0,
+      potencia: parseFloat(item.potencia_kw) || 0,
+      energia: parseFloat(item.energia_kwh) || 0,
+      gas: (parseFloat(item.potencia_kw) || 0) * 0.1,
+      reading_time: item.reading_time
+    }))
+
+    // Combina com dados em tempo real (que já estão no formato correto)
+    const combined = [...dbFormatted, ...realTimeData]
+    
+    // Remove duplicatas baseado no timestamp (se houver)
+    const unique = combined.filter((item, index, self) => 
+      index === self.findIndex(t => t.time === item.time)
+    )
+    
+    return unique.sort((a, b) => {
+      const timeA = a.reading_time ? new Date(a.reading_time) : new Date('1970-01-01 ' + a.time)
+      const timeB = b.reading_time ? new Date(b.reading_time) : new Date('1970-01-01 ' + b.time)
+      return timeA - timeB
+    })
+  }
 
   const loadConsumptionHistory = async () => {
     if (!deviceId) return
@@ -30,85 +61,87 @@ function ConsumptionHistory({ deviceId, userInfo }) {
 
       if (error) {
         console.error('Erro ao carregar histórico:', error)
+        setDbHistoryData([])
       } else if (data && data.length > 0) {
-        // Agrupa por data
-        const groupedByDate = {}
-        
-        data.forEach(item => {
-          const date = new Date(item.reading_time).toLocaleDateString('pt-BR')
-          if (!groupedByDate[date]) {
-            groupedByDate[date] = {
-              date: date,
-              consumoGas: 0,
-              energiaTotal: 0,
-              vazaoTotal: 0,
-              potenciaMedia: 0,
-              tempIdaMedia: 0,
-              tempRetornoMedia: 0,
-              deltaTMedia: 0,
-              tempIdaMax: -Infinity,
-              tempRetornoMax: -Infinity,
-              tempIdaMin: Infinity,
-              tempRetornoMin: Infinity,
-              count: 0
-            }
-          }
-          
-          const consumo = (parseFloat(item.potencia_kW) || 0) * 0.1
-          const energia = parseFloat(item.energia_kWh) || 0
-          const vazao = parseFloat(item.vazao_L_s) || 0
-          const potencia = parseFloat(item.potencia_kW) || 0
-          const tempIda = parseFloat(item.temp_ida) || 0
-          const tempRetorno = parseFloat(item.temp_retorno) || 0
-          const deltaT = parseFloat(item.deltaT) || 0
-          
-          groupedByDate[date].consumoGas += consumo
-          groupedByDate[date].energiaTotal = Math.max(groupedByDate[date].energiaTotal, energia)
-          groupedByDate[date].vazaoTotal += vazao * 5 // Assumindo intervalo de 5 segundos
-          groupedByDate[date].potenciaMedia += potencia
-          groupedByDate[date].tempIdaMedia += tempIda
-          groupedByDate[date].tempRetornoMedia += tempRetorno
-          groupedByDate[date].deltaTMedia += deltaT
-          
-          // Máximos e mínimos de temperatura
-          if (tempIda > groupedByDate[date].tempIdaMax) groupedByDate[date].tempIdaMax = tempIda
-          if (tempIda < groupedByDate[date].tempIdaMin && tempIda > 0) groupedByDate[date].tempIdaMin = tempIda
-          if (tempRetorno > groupedByDate[date].tempRetornoMax) groupedByDate[date].tempRetornoMax = tempRetorno
-          if (tempRetorno < groupedByDate[date].tempRetornoMin && tempRetorno > 0) groupedByDate[date].tempRetornoMin = tempRetorno
-          
-          groupedByDate[date].count += 1
-        })
-
-        // Calcula médias e formata
-        const daily = Object.values(groupedByDate).map(day => ({
-          date: day.date,
-          consumoGas: parseFloat(day.consumoGas.toFixed(4)),
-          energiaTotal: parseFloat(day.energiaTotal.toFixed(2)),
-          vazaoTotal: parseFloat(day.vazaoTotal.toFixed(2)), // Já em litros
-          potenciaMedia: parseFloat((day.potenciaMedia / day.count).toFixed(2)),
-          tempIdaMedia: parseFloat((day.tempIdaMedia / day.count).toFixed(2)),
-          tempRetornoMedia: parseFloat((day.tempRetornoMedia / day.count).toFixed(2)),
-          deltaTMedia: parseFloat((day.deltaTMedia / day.count).toFixed(2)),
-          tempIdaMax: day.tempIdaMax === -Infinity ? 0 : parseFloat(day.tempIdaMax.toFixed(2)),
-          tempRetornoMax: day.tempRetornoMax === -Infinity ? 0 : parseFloat(day.tempRetornoMax.toFixed(2)),
-          tempIdaMin: day.tempIdaMin === Infinity ? 0 : parseFloat(day.tempIdaMin.toFixed(2)),
-          tempRetornoMin: day.tempRetornoMin === Infinity ? 0 : parseFloat(day.tempRetornoMin.toFixed(2))
-        }))
-
-        setDailyData(daily)
-        setHistoryData(data)
-        console.log(`Histórico carregado: ${data.length} pontos, ${daily.length} dias`)
+        setDbHistoryData(data)
       } else {
-        setDailyData([])
-        setHistoryData([])
-        console.log('Nenhum dado encontrado no período')
+        setDbHistoryData([])
       }
     } catch (err) {
       console.error('Erro inesperado ao carregar histórico:', err)
+      setDbHistoryData([])
     } finally {
       setLoading(false)
     }
   }
+
+  // Processa dados combinados quando dbHistoryData ou realTimeHistoryData mudarem
+  useEffect(() => {
+    const combined = combineData(dbHistoryData, realTimeHistoryData)
+    
+    if (combined.length > 0) {
+      // Agrupa por data
+      const groupedByDate = {}
+      
+      combined.forEach(item => {
+        const date = item.date || new Date().toLocaleDateString('pt-BR')
+        if (!groupedByDate[date]) {
+          groupedByDate[date] = {
+            date: date,
+            consumoGas: 0,
+            energiaTotal: 0,
+            vazaoTotal: 0,
+            potenciaMedia: 0,
+            tempIdaMedia: 0,
+            tempRetornoMedia: 0,
+            deltaTMedia: 0,
+            tempIdaMax: -Infinity,
+            tempRetornoMax: -Infinity,
+            tempIdaMin: Infinity,
+            tempRetornoMin: Infinity,
+            count: 0
+          }
+        }
+        
+        groupedByDate[date].consumoGas += item.gas || 0
+        groupedByDate[date].energiaTotal = Math.max(groupedByDate[date].energiaTotal, item.energia || 0)
+        groupedByDate[date].vazaoTotal += (item.vazao || 0) * 30 // 30 segundos entre leituras
+        groupedByDate[date].potenciaMedia += item.potencia || 0
+        groupedByDate[date].tempIdaMedia += item.temp_ida || 0
+        groupedByDate[date].tempRetornoMedia += item.temp_retorno || 0
+        groupedByDate[date].deltaTMedia += item.deltaT || 0
+        
+        // Máximos e mínimos de temperatura
+        if (item.temp_ida > groupedByDate[date].tempIdaMax) groupedByDate[date].tempIdaMax = item.temp_ida
+        if (item.temp_ida < groupedByDate[date].tempIdaMin && item.temp_ida > 0) groupedByDate[date].tempIdaMin = item.temp_ida
+        if (item.temp_retorno > groupedByDate[date].tempRetornoMax) groupedByDate[date].tempRetornoMax = item.temp_retorno
+        if (item.temp_retorno < groupedByDate[date].tempRetornoMin && item.temp_retorno > 0) groupedByDate[date].tempRetornoMin = item.temp_retorno
+        
+        groupedByDate[date].count += 1
+      })
+
+      // Calcula médias e formata
+      const daily = Object.values(groupedByDate).map(day => ({
+        date: day.date,
+        consumoGas: parseFloat(day.consumoGas.toFixed(4)),
+        energiaTotal: parseFloat(day.energiaTotal.toFixed(2)),
+        vazaoTotal: parseFloat(day.vazaoTotal.toFixed(2)),
+        potenciaMedia: parseFloat((day.potenciaMedia / day.count).toFixed(2)),
+        tempIdaMedia: parseFloat((day.tempIdaMedia / day.count).toFixed(2)),
+        tempRetornoMedia: parseFloat((day.tempRetornoMedia / day.count).toFixed(2)),
+        deltaTMedia: parseFloat((day.deltaTMedia / day.count).toFixed(2)),
+        tempIdaMax: day.tempIdaMax === -Infinity ? 0 : parseFloat(day.tempIdaMax.toFixed(2)),
+        tempRetornoMax: day.tempRetornoMax === -Infinity ? 0 : parseFloat(day.tempRetornoMax.toFixed(2)),
+        tempIdaMin: day.tempIdaMin === Infinity ? 0 : parseFloat(day.tempIdaMin.toFixed(2)),
+        tempRetornoMin: day.tempRetornoMin === Infinity ? 0 : parseFloat(day.tempRetornoMin.toFixed(2))
+      }))
+
+      setDailyData(daily)
+      console.log(`✅ Histórico atualizado: ${combined.length} pontos (${dbHistoryData.length} do banco + ${realTimeHistoryData.length} em tempo real), ${daily.length} dias`)
+    } else {
+      setDailyData([])
+    }
+  }, [dbHistoryData, realTimeHistoryData])
 
   useEffect(() => {
     if (deviceId) {

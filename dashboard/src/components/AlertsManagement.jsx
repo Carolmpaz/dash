@@ -5,7 +5,7 @@ import './AlertsManagement.css'
 
 const GAS_PRICE_PER_M3 = 8.00
 
-function AlertsManagement({ deviceId, userInfo }) {
+function AlertsManagement({ deviceId, userInfo, historyData: realTimeHistoryData = [] }) {
   const [activeSection, setActiveSection] = useState('consumption') // 'consumption' ou 'weather'
 
   // Estados para alertas de consumo
@@ -16,6 +16,7 @@ function AlertsManagement({ deviceId, userInfo }) {
   const [currentCost, setCurrentCost] = useState(0)
   const [loadingConsumption, setLoadingConsumption] = useState(false)
   const [limitsLoaded, setLimitsLoaded] = useState(false)
+  const [dbConsumptionData, setDbConsumptionData] = useState([])
 
   // Estados para alertas meteorológicos
   const [weatherData, setWeatherData] = useState(null)
@@ -116,25 +117,51 @@ function AlertsManagement({ deviceId, userInfo }) {
 
       const { data, error } = await supabase
         .from('leituras_sensores')
-        .select('potencia_kW')
+        .select('potencia_kw')
         .eq('device_id', deviceId)
         .gte('reading_time', today.toISOString())
         .lt('reading_time', tomorrow.toISOString())
 
       if (!error && data) {
-        const totalConsumption = data.reduce((sum, item) => {
-          return sum + ((parseFloat(item.potencia_kW) || 0) * 0.1)
-        }, 0)
-
-        setCurrentConsumption(totalConsumption)
-        setCurrentCost(totalConsumption * GAS_PRICE_PER_M3)
+        setDbConsumptionData(data)
+      } else {
+        setDbConsumptionData([])
       }
     } catch (err) {
       console.error('Erro ao carregar consumo:', err)
+      setDbConsumptionData([])
     } finally {
       setLoadingConsumption(false)
     }
   }
+
+  // Calcula consumo atual combinando dados do banco com dados em tempo real
+  useEffect(() => {
+    // Consumo do banco de dados (hoje)
+    const dbConsumption = dbConsumptionData.reduce((sum, item) => {
+      return sum + ((parseFloat(item.potencia_kw) || 0) * 0.1)
+    }, 0)
+
+    // Consumo em tempo real (apenas dados de hoje)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const realTimeToday = realTimeHistoryData.filter(item => {
+      const itemDate = item.reading_time ? new Date(item.reading_time) : new Date()
+      return itemDate >= today
+    })
+    
+    const realTimeConsumption = realTimeToday.reduce((sum, item) => {
+      return sum + (item.gas || ((item.potencia || 0) * 0.1))
+    }, 0)
+
+    const totalConsumption = dbConsumption + realTimeConsumption
+    setCurrentConsumption(totalConsumption)
+    setCurrentCost(totalConsumption * GAS_PRICE_PER_M3)
+    
+    if (dbConsumptionData.length > 0 || realTimeToday.length > 0) {
+      console.log(`✅ Consumo atualizado: ${totalConsumption.toFixed(4)} m³ (${dbConsumption.toFixed(4)} do banco + ${realTimeConsumption.toFixed(4)} em tempo real)`)
+    }
+  }, [dbConsumptionData, realTimeHistoryData])
 
   const checkConsumptionAlerts = useCallback(() => {
     const newAlerts = []

@@ -33,24 +33,39 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
   const clientRef = useRef(null)
   const maxHistoryPoints = 50
   const maxHistoryLoad = 100
+  const saveIntervalRef = useRef(null)
+  const pendingDataRef = useRef(null)
 
   // Função para salvar dados no Supabase
   const saveToDatabase = async (data, retries = 3) => {
+    if (!deviceId) {
+      console.warn('deviceId não disponível, não é possível salvar')
+      return
+    }
+
+    // Prepara os dados para inserção com os nomes corretos das colunas
+    const insertData = {
+      device_id: deviceId,
+      temp_ida: data.temp_ida != null ? parseFloat(data.temp_ida) : null,
+      temp_retorno: data.temp_retorno != null ? parseFloat(data.temp_retorno) : null,
+      deltat: data.deltaT != null ? parseFloat(data.deltaT) : null,
+      vazao_l_s: data.vazao_L_s != null ? parseFloat(data.vazao_L_s) : null,
+      potencia_kw: data.potencia_kW != null ? parseFloat(data.potencia_kW) : null,
+      energia_kwh: data.energia_kWh != null ? parseFloat(data.energia_kWh) : null
+    }
+
+    console.log('Tentando salvar dados no banco:', insertData)
+
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const { error } = await supabase
+        const { data: insertedData, error } = await supabase
           .from('leituras_sensores')
-          .insert({
-            device_id: deviceId,
-            temp_ida: data.temp_ida || null,
-            temp_retorno: data.temp_retorno || null,
-            deltaT: data.deltaT || null,
-            vazao_L_s: data.vazao_L_s || null,
-            potencia_kW: data.potencia_kW || null,
-            energia_kWh: data.energia_kWh || null
-          })
+          .insert(insertData)
+          .select()
 
         if (error) {
+          console.error(`Erro ao salvar (tentativa ${attempt}/${retries}):`, error)
+          
           if (error.code === '23503') {
             console.warn('Dispositivo não encontrado no banco.')
             setDbConnected(false)
@@ -63,10 +78,12 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
           console.error('Erro ao salvar no banco:', error)
           setDbConnected(false)
         } else {
+          console.log('Dados salvos com sucesso!', insertedData)
           setDbConnected(true)
           return
         }
       } catch (err) {
+        console.error(`Erro inesperado na tentativa ${attempt}:`, err)
         if (attempt < retries) {
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
           continue
@@ -102,11 +119,11 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             timestamp: new Date(item.reading_time).getTime(),
             temp_ida: parseFloat(item.temp_ida) || 0,
             temp_retorno: parseFloat(item.temp_retorno) || 0,
-            deltaT: parseFloat(item.deltaT) || 0,
-            vazao: parseFloat(item.vazao_L_s) || 0,
-            potencia: parseFloat(item.potencia_kW) || 0,
-            energia: parseFloat(item.energia_kWh) || 0,
-            gas: (parseFloat(item.potencia_kW) || 0) * 0.1
+            deltaT: parseFloat(item.deltat) || 0,
+            vazao: parseFloat(item.vazao_l_s) || 0,
+            potencia: parseFloat(item.potencia_kw) || 0,
+            energia: parseFloat(item.energia_kwh) || 0,
+            gas: (parseFloat(item.potencia_kw) || 0) * 0.1
           }))
         
         setHistoryData(formattedData.slice(-maxHistoryPoints))
@@ -174,6 +191,40 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
     }
   }, [userInfo, deviceId])
 
+  // Configura intervalo para salvar dados a cada 30 segundos
+  useEffect(() => {
+    if (!deviceId) {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current)
+        saveIntervalRef.current = null
+      }
+      return
+    }
+
+    // Comentado temporariamente - salvamento no banco desabilitado
+    // Os dados continuam sendo exibidos na tela através do histórico em memória
+    /*
+    saveIntervalRef.current = setInterval(() => {
+      if (pendingDataRef.current) {
+        console.log('Salvando dados no banco (intervalo de 30 segundos)...')
+        saveToDatabase(pendingDataRef.current).catch(err => {
+          console.error('Erro ao salvar no banco (não crítico):', err)
+        })
+        pendingDataRef.current = null
+      } else {
+        console.log('Nenhum dado pendente para salvar')
+      }
+    }, 30 * 1000) // 30 segundos
+    */
+
+    return () => {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current)
+        saveIntervalRef.current = null
+      }
+    }
+  }, [deviceId])
+
   // Conexão MQTT
   useEffect(() => {
     let client = null
@@ -212,7 +263,9 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             energia_kWh: data.energia_kWh || 0
           }
           
+          // Atualiza os dados do sensor imediatamente
           setSensorData(processedData)
+          console.log('✅ Dados do sensor atualizados (Zelador):', processedData)
           
           const timestamp = new Date().toLocaleTimeString('pt-BR')
           const historyPoint = {
@@ -226,14 +279,16 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             gas: (processedData.potencia_kW * 0.1)
           }
           
+          // Atualiza o histórico imediatamente
           setHistoryData(prev => {
             const newData = [...prev, historyPoint]
-            return newData.slice(-maxHistoryPoints)
+            const sliced = newData.slice(-maxHistoryPoints)
+            console.log('✅ Histórico atualizado (Zelador):', sliced.length, 'pontos')
+            return sliced
           })
           
-          saveToDatabase(processedData).catch(err => {
-            console.error('Erro ao salvar no banco (não crítico):', err)
-          })
+          // Armazena os dados mais recentes para salvar a cada 30 segundos (opcional)
+          pendingDataRef.current = processedData
         } catch (error) {
           console.error('Erro ao parsear JSON:', error)
         }
@@ -269,10 +324,22 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
     }
   }, [])
 
-  const consumoGas = (sensorData.potencia_kW * 0.1).toFixed(4)
-  const intervaloMedicao = 5
+  // Calcula valores acumulados a partir do histórico em memória
+  const consumoGas = historyData.reduce((total, ponto) => {
+    return total + (ponto.gas || 0)
+  }, 0).toFixed(4)
+  
+  const energiaTotal = historyData.length > 0
+    ? Math.max(...historyData.map(p => p.energia || 0)).toFixed(2)
+    : sensorData.energia_kWh.toFixed(2)
+  
+  const potenciaTotal = historyData.reduce((total, ponto) => {
+    return total + (ponto.potencia || 0)
+  }, 0).toFixed(2)
+  
+  const intervaloMedicao = 30 // 30 segundos entre cada leitura
   const vazaoAcumulada = historyData.reduce((total, ponto) => {
-    return total + (ponto.vazao * intervaloMedicao)
+    return total + ((ponto.vazao || 0) * intervaloMedicao)
   }, 0)
 
   return (
@@ -377,11 +444,11 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
               </div>
               <div className="kpi-card highlight">
                 <div className="kpi-label">Potência Térmica</div>
-                <div className="kpi-value">{sensorData.potencia_kW.toFixed(2)} kW</div>
+                <div className="kpi-value">{potenciaTotal} kW</div>
               </div>
               <div className="kpi-card highlight">
                 <div className="kpi-label">Energia Acumulada</div>
-                <div className="kpi-value">{sensorData.energia_kWh.toFixed(2)} kWh</div>
+                <div className="kpi-value">{energiaTotal} kWh</div>
               </div>
               <div className="kpi-card">
                 <div className="kpi-label">Vazão Acumulada</div>
@@ -422,16 +489,28 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
 
               <div className="chart-card">
                 <div className="chart-header">
-                  <h3>Vazão de Água</h3>
+                  <h3>Vazão Acumulada de Água</h3>
                 </div>
                 <ResponsiveContainer width="100%" height={400}>
-                  <LineChart data={historyData}>
+                  <LineChart data={historyData.map((item, index) => {
+                    // Calcula vazão acumulada progressivamente
+                    const vazaoAcumulada = historyData.slice(0, index + 1).reduce((total, ponto) => {
+                      return total + ((ponto.vazao || 0) * 30) // 30 segundos entre cada leitura
+                    }, 0)
+                    return {
+                      ...item,
+                      vazaoAcumulada: vazaoAcumulada
+                    }
+                  })}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
                     <XAxis dataKey="time" stroke="#666" fontSize={12} tick={{ fill: '#666' }} />
-                    <YAxis stroke="#666" fontSize={12} tick={{ fill: '#666' }} label={{ value: 'Vazão (L/s)', angle: -90, position: 'insideLeft' }} />
-                    <Tooltip contentStyle={{ backgroundColor: '#fff', border: '1px solid #00B2A9', borderRadius: '8px' }} />
+                    <YAxis stroke="#666" fontSize={12} tick={{ fill: '#666' }} label={{ value: 'Vazão Acumulada (L)', angle: -90, position: 'insideLeft' }} />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#fff', border: '1px solid #00B2A9', borderRadius: '8px' }}
+                      formatter={(value) => [`${parseFloat(value).toFixed(2)} L`, 'Vazão Acumulada']}
+                    />
                     <Legend />
-                    <Line type="monotone" dataKey="vazao" name="Vazão (L/s)" stroke="#00B2A9" strokeWidth={3} dot={{ fill: '#00B2A9', r: 4 }} activeDot={{ r: 6 }} />
+                    <Line type="monotone" dataKey="vazaoAcumulada" name="Vazão Acumulada (L)" stroke="#00B2A9" strokeWidth={3} dot={{ fill: '#00B2A9', r: 4 }} activeDot={{ r: 6 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -527,7 +606,7 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
         )}
 
         {activeTab === 'history' && (
-          <ConsumptionHistory deviceId={deviceId} userInfo={userInfo} />
+          <ConsumptionHistory deviceId={deviceId} userInfo={userInfo} historyData={historyData} />
         )}
 
         {activeTab === 'guide' && (

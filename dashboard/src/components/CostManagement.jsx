@@ -5,20 +5,48 @@ import './CostManagement.css'
 
 const GAS_PRICE_PER_M3 = 8.00 // R$ 8,00 por m³
 
-function CostManagement({ deviceId, userInfo }) {
+function CostManagement({ deviceId, userInfo, historyData: realTimeHistoryData = [] }) {
   const [startDate, setStartDate] = useState(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0])
+  const [dbCostData, setDbCostData] = useState([])
   const [dailyCosts, setDailyCosts] = useState([])
   const [monthlyCosts, setMonthlyCosts] = useState([])
   const [loading, setLoading] = useState(false)
   const [chartType, setChartType] = useState('bar')
   const [totalCost, setTotalCost] = useState(0)
 
-  useEffect(() => {
-    if (deviceId) {
-      loadCostData()
-    }
-  }, [deviceId, startDate, endDate])
+  // Combina dados do banco com dados em tempo real
+  const combineData = (dbData, realTimeData) => {
+    // Converte dados do banco para o formato padrão
+    const dbFormatted = dbData.map(item => ({
+      time: new Date(item.reading_time).toLocaleTimeString('pt-BR'),
+      date: new Date(item.reading_time).toLocaleDateString('pt-BR'),
+      potencia: parseFloat(item.potencia_kw) || 0,
+      gas: (parseFloat(item.potencia_kw) || 0) * 0.1,
+      reading_time: item.reading_time
+    }))
+
+    // Converte dados em tempo real para o formato padrão
+    const realTimeFormatted = realTimeData.map(item => ({
+      time: item.time,
+      date: new Date().toLocaleDateString('pt-BR'),
+      potencia: item.potencia || 0,
+      gas: item.gas || ((item.potencia || 0) * 0.1),
+      reading_time: new Date().toISOString()
+    }))
+
+    // Combina e remove duplicatas
+    const combined = [...dbFormatted, ...realTimeFormatted]
+    const unique = combined.filter((item, index, self) => 
+      index === self.findIndex(t => t.time === item.time)
+    )
+    
+    return unique.sort((a, b) => {
+      const timeA = a.reading_time ? new Date(a.reading_time) : new Date('1970-01-01 ' + a.time)
+      const timeB = b.reading_time ? new Date(b.reading_time) : new Date('1970-01-01 ' + b.time)
+      return timeA - timeB
+    })
+  }
 
   const loadCostData = async () => {
     if (!deviceId) return
@@ -39,67 +67,86 @@ function CostManagement({ deviceId, userInfo }) {
 
       if (error) {
         console.error('Erro ao carregar dados:', error)
+        setDbCostData([])
       } else if (data && data.length > 0) {
-        // Agrupa por data
-        const groupedByDate = {}
-        
-        data.forEach(item => {
-          const date = new Date(item.reading_time).toLocaleDateString('pt-BR')
-          if (!groupedByDate[date]) {
-            groupedByDate[date] = {
-              date: date,
-              consumoGas: 0,
-              count: 0
-            }
-          }
-          
-          const consumo = (parseFloat(item.potencia_kW) || 0) * 0.1
-          groupedByDate[date].consumoGas += consumo
-          groupedByDate[date].count += 1
-        })
-
-        // Calcula custos diários
-        const daily = Object.values(groupedByDate).map(day => ({
-          date: day.date,
-          consumoGas: parseFloat(day.consumoGas.toFixed(4)),
-          custo: parseFloat((day.consumoGas * GAS_PRICE_PER_M3).toFixed(2))
-        }))
-
-        // Agrupa por mês
-        const groupedByMonth = {}
-        daily.forEach(day => {
-          const month = day.date.split('/')[1] + '/' + day.date.split('/')[2]
-          if (!groupedByMonth[month]) {
-            groupedByMonth[month] = {
-              month: month,
-              consumoGas: 0,
-              custo: 0
-            }
-          }
-          groupedByMonth[month].consumoGas += day.consumoGas
-          groupedByMonth[month].custo += day.custo
-        })
-
-        const monthly = Object.values(groupedByMonth).map(month => ({
-          month: month.month,
-          consumoGas: parseFloat(month.consumoGas.toFixed(4)),
-          custo: parseFloat(month.custo.toFixed(2))
-        }))
-
-        setDailyCosts(daily)
-        setMonthlyCosts(monthly)
-        setTotalCost(daily.reduce((sum, day) => sum + day.custo, 0))
+        setDbCostData(data)
       } else {
-        setDailyCosts([])
-        setMonthlyCosts([])
-        setTotalCost(0)
+        setDbCostData([])
       }
     } catch (err) {
       console.error('Erro ao carregar dados de custo:', err)
+      setDbCostData([])
     } finally {
       setLoading(false)
     }
   }
+
+  // Processa dados combinados quando dbCostData ou realTimeHistoryData mudarem
+  useEffect(() => {
+    const combined = combineData(dbCostData, realTimeHistoryData)
+    
+    if (combined.length > 0) {
+      // Agrupa por data
+      const groupedByDate = {}
+      
+      combined.forEach(item => {
+        const date = item.date || new Date().toLocaleDateString('pt-BR')
+        if (!groupedByDate[date]) {
+          groupedByDate[date] = {
+            date: date,
+            consumoGas: 0,
+            count: 0
+          }
+        }
+        
+        groupedByDate[date].consumoGas += item.gas || 0
+        groupedByDate[date].count += 1
+      })
+
+      // Calcula custos diários
+      const daily = Object.values(groupedByDate).map(day => ({
+        date: day.date,
+        consumoGas: parseFloat(day.consumoGas.toFixed(4)),
+        custo: parseFloat((day.consumoGas * GAS_PRICE_PER_M3).toFixed(2))
+      }))
+
+      // Agrupa por mês
+      const groupedByMonth = {}
+      daily.forEach(day => {
+        const month = day.date.split('/')[1] + '/' + day.date.split('/')[2]
+        if (!groupedByMonth[month]) {
+          groupedByMonth[month] = {
+            month: month,
+            consumoGas: 0,
+            custo: 0
+          }
+        }
+        groupedByMonth[month].consumoGas += day.consumoGas
+        groupedByMonth[month].custo += day.custo
+      })
+
+      const monthly = Object.values(groupedByMonth).map(month => ({
+        month: month.month,
+        consumoGas: parseFloat(month.consumoGas.toFixed(4)),
+        custo: parseFloat(month.custo.toFixed(2))
+      }))
+
+      setDailyCosts(daily)
+      setMonthlyCosts(monthly)
+      setTotalCost(daily.reduce((sum, day) => sum + day.custo, 0))
+      console.log(`✅ Custos atualizados: ${combined.length} pontos (${dbCostData.length} do banco + ${realTimeHistoryData.length} em tempo real)`)
+    } else {
+      setDailyCosts([])
+      setMonthlyCosts([])
+      setTotalCost(0)
+    }
+  }, [dbCostData, realTimeHistoryData])
+
+  useEffect(() => {
+    if (deviceId) {
+      loadCostData()
+    }
+  }, [deviceId, startDate, endDate])
 
   return (
     <div className="cost-management-container">

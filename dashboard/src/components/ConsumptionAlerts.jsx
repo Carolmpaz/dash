@@ -90,14 +90,14 @@ function ConsumptionAlerts({ deviceId, userInfo }) {
 
       const { data, error } = await supabase
         .from('leituras_sensores')
-        .select('potencia_kW')
+        .select('potencia_kw')
         .eq('device_id', deviceId)
         .gte('reading_time', today.toISOString())
         .lt('reading_time', tomorrow.toISOString())
 
       if (!error && data) {
         const totalConsumption = data.reduce((sum, item) => {
-          return sum + ((parseFloat(item.potencia_kW) || 0) * 0.1)
+          return sum + ((parseFloat(item.potencia_kw) || 0) * 0.1)
         }, 0)
 
         setCurrentConsumption(totalConsumption)

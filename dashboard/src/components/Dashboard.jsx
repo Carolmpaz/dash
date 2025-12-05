@@ -30,27 +30,57 @@ function Dashboard({ onLogout, user, userInfo }) {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [loadingDevices, setLoadingDevices] = useState(false)
   const [activeTab, setActiveTab] = useState('dashboard') // 'dashboard', 'comparison', 'history'
+  const [accumulatedValues, setAccumulatedValues] = useState({
+    energiaTotal: 0,
+    potenciaTotal: 0,
+    gasTotal: 0,
+    vazaoTotal: 0
+  })
   const clientRef = useRef(null)
   const maxHistoryPoints = 50 // Máximo de pontos no histórico
   const maxHistoryLoad = 100 // Máximo de pontos a carregar do banco
+  const saveIntervalRef = useRef(null) // Referência para o intervalo de salvamento
+  const accumulatedIntervalRef = useRef(null) // Referência para o intervalo de salvamento de dados acumulados
+  const pendingDataRef = useRef(null) // Dados pendentes para salvar
 
   // Função para salvar dados no Supabase com retry
   const saveToDatabase = async (data, retries = 3) => {
+    if (!deviceId) {
+      console.warn('deviceId não disponível, não é possível salvar')
+      return
+    }
+
+    // Prepara os dados para inserção com os nomes corretos das colunas
+    const insertData = {
+      device_id: deviceId,
+      temp_ida: data.temp_ida != null ? parseFloat(data.temp_ida) : null,
+      temp_retorno: data.temp_retorno != null ? parseFloat(data.temp_retorno) : null,
+      deltat: data.deltaT != null ? parseFloat(data.deltaT) : null,
+      vazao_l_s: data.vazao_L_s != null ? parseFloat(data.vazao_L_s) : null,
+      potencia_kw: data.potencia_kW != null ? parseFloat(data.potencia_kW) : null,
+      energia_kwh: data.energia_kWh != null ? parseFloat(data.energia_kWh) : null
+    }
+
+    console.log('Tentando salvar dados no banco:', {
+      device_id: insertData.device_id,
+      temp_ida: insertData.temp_ida,
+      temp_retorno: insertData.temp_retorno,
+      deltat: insertData.deltat,
+      vazao_l_s: insertData.vazao_l_s,
+      potencia_kw: insertData.potencia_kw,
+      energia_kwh: insertData.energia_kwh
+    })
+
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        const { error } = await supabase
+        const { data: insertedData, error } = await supabase
           .from('leituras_sensores')
-          .insert({
-            device_id: deviceId,
-            temp_ida: data.temp_ida || null,
-            temp_retorno: data.temp_retorno || null,
-            deltaT: data.deltaT || null,
-            vazao_L_s: data.vazao_L_s || null,
-            potencia_kW: data.potencia_kW || null,
-            energia_kWh: data.energia_kWh || null
-          })
+          .insert(insertData)
+          .select()
 
         if (error) {
+          console.error(`Erro ao salvar (tentativa ${attempt}/${retries}):`, error)
+          
           // Se o erro for de dispositivo não encontrado, não tenta novamente
           if (error.code === '23503') {
             console.warn('Dispositivo não encontrado no banco. Configure o device_id e cadastre o dispositivo.')
@@ -60,7 +90,7 @@ function Dashboard({ onLogout, user, userInfo }) {
           
           // Para outros erros, tenta novamente
           if (attempt < retries) {
-            console.warn(`Tentativa ${attempt} falhou, tentando novamente...`, error.message)
+            console.warn(`Tentativa ${attempt} falhou, tentando novamente em ${1000 * attempt}ms...`, error.message)
             await new Promise(resolve => setTimeout(resolve, 1000 * attempt)) // Backoff exponencial
             continue
           }
@@ -68,12 +98,14 @@ function Dashboard({ onLogout, user, userInfo }) {
           console.error('Erro ao salvar no banco após todas as tentativas:', error)
           setDbConnected(false)
         } else {
+          console.log('Dados salvos com sucesso!', insertedData)
           setDbConnected(true)
           return // Sucesso, sai da função
         }
       } catch (err) {
+        console.error(`Erro inesperado na tentativa ${attempt}:`, err)
         if (attempt < retries) {
-          console.warn(`Erro inesperado na tentativa ${attempt}, tentando novamente...`, err)
+          console.warn(`Tentando novamente em ${1000 * attempt}ms...`)
           await new Promise(resolve => setTimeout(resolve, 1000 * attempt))
           continue
         }
@@ -109,18 +141,22 @@ function Dashboard({ onLogout, user, userInfo }) {
             timestamp: new Date(item.reading_time).getTime(), // Para sincronização com dados meteorológicos
             temp_ida: parseFloat(item.temp_ida) || 0,
             temp_retorno: parseFloat(item.temp_retorno) || 0,
-            deltaT: parseFloat(item.deltaT) || 0,
-            vazao: parseFloat(item.vazao_L_s) || 0,
-            potencia: parseFloat(item.potencia_kW) || 0,
-            energia: parseFloat(item.energia_kWh) || 0,
-            gas: (parseFloat(item.potencia_kW) || 0) * 0.1
+            deltaT: parseFloat(item.deltat) || 0, // Corrigido: deltat (minúscula)
+            vazao: parseFloat(item.vazao_l_s) || 0, // Corrigido: vazao_l_s (minúscula)
+            potencia: parseFloat(item.potencia_kw) || 0, // Corrigido: potencia_kw (minúscula)
+            energia: parseFloat(item.energia_kwh) || 0, // Corrigido: energia_kwh (minúscula)
+            gas: (parseFloat(item.potencia_kw) || 0) * 0.1
           }))
         
         setHistoryData(formattedData.slice(-maxHistoryPoints))
         console.log(`Histórico carregado: ${formattedData.length} pontos`)
+        
+        // Carrega valores acumulados de todos os dados do banco
+        loadAccumulatedValues()
       } else {
         setDbConnected(true)
         console.log('Nenhum histórico encontrado no banco')
+        setAccumulatedValues({ energiaTotal: 0, potenciaTotal: 0, gasTotal: 0, vazaoTotal: 0 })
       }
     } catch (err) {
       console.error('Erro inesperado ao carregar histórico:', err)
@@ -128,6 +164,208 @@ function Dashboard({ onLogout, user, userInfo }) {
     } finally {
       setLoadingHistory(false)
     }
+  }
+
+  // Função para salvar dados acumulados no banco de dados
+  const saveAccumulatedValues = async (energiaTotal, potenciaTotal, gasTotal, vazaoTotal) => {
+    console.log('🔍 saveAccumulatedValues chamada com:', {
+      deviceId,
+      condominio_id: userInfo?.condominio_id,
+      energiaTotal,
+      potenciaTotal,
+      gasTotal,
+      vazaoTotal
+    })
+
+    if (!deviceId) {
+      console.error('❌ deviceId não disponível')
+      return
+    }
+
+    if (!userInfo?.condominio_id) {
+      console.error('❌ condominio_id não disponível. userInfo:', userInfo)
+      return
+    }
+
+    try {
+      const hoje = new Date().toISOString().split('T')[0] // Data no formato YYYY-MM-DD
+      console.log('📅 Data de hoje:', hoje)
+
+      // Verifica se já existe registro para hoje
+      const { data: existing, error: checkError } = await supabase
+        .from('consumo_acumulado')
+        .select('id, energia_total_kwh, potencia_total_kw, gas_total_m3, vazao_total_l')
+        .eq('condominio_id', userInfo.condominio_id)
+        .eq('device_id', deviceId)
+        .eq('data', hoje)
+        .single()
+
+      console.log('🔍 Verificação de registro existente:', { existing, checkError })
+
+      if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = nenhum resultado encontrado
+        console.error('❌ Erro ao verificar dados acumulados existentes:', checkError)
+        console.error('Código do erro:', checkError.code)
+        console.error('Mensagem:', checkError.message)
+        console.error('Detalhes:', checkError.details)
+        return
+      }
+
+      if (existing) {
+        console.log('📝 Atualizando registro existente:', existing.id)
+        // Atualiza registro existente (soma os valores)
+        const { data: updatedData, error: updateError } = await supabase
+          .from('consumo_acumulado')
+          .update({
+            energia_total_kwh: Math.max(parseFloat(existing.energia_total_kwh) || 0, energiaTotal),
+            potencia_total_kw: (parseFloat(existing.potencia_total_kw) || 0) + potenciaTotal,
+            gas_total_m3: (parseFloat(existing.gas_total_m3) || 0) + gasTotal,
+            vazao_total_l: (parseFloat(existing.vazao_total_l) || 0) + vazaoTotal,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', existing.id)
+          .select()
+
+        if (updateError) {
+          console.error('❌ Erro ao atualizar dados acumulados:', updateError)
+          console.error('Código do erro:', updateError.code)
+          console.error('Mensagem:', updateError.message)
+          console.error('Detalhes:', updateError.details)
+        } else {
+          console.log('✅ Dados acumulados atualizados no banco:', updatedData)
+        }
+      } else {
+        console.log('➕ Criando novo registro de dados acumulados')
+        // Cria novo registro
+        const { data: insertedData, error: insertError } = await supabase
+          .from('consumo_acumulado')
+          .insert({
+            condominio_id: userInfo.condominio_id,
+            device_id: deviceId,
+            data: hoje,
+            energia_total_kwh: energiaTotal,
+            potencia_total_kw: potenciaTotal,
+            gas_total_m3: gasTotal,
+            vazao_total_l: vazaoTotal
+          })
+          .select()
+
+        if (insertError) {
+          console.error('❌ Erro ao inserir dados acumulados:', insertError)
+          console.error('Código do erro:', insertError.code)
+          console.error('Mensagem:', insertError.message)
+          console.error('Detalhes:', insertError.details)
+          console.error('Hint:', insertError.hint)
+        } else {
+          console.log('✅ Dados acumulados salvos no banco com sucesso:', insertedData)
+        }
+      }
+    } catch (err) {
+      console.error('❌ Erro inesperado ao salvar dados acumulados:', err)
+      console.error('Stack:', err.stack)
+    }
+  }
+
+  // Função para carregar valores acumulados do banco de dados
+  const loadAccumulatedValues = async () => {
+    if (!deviceId || !userInfo?.condominio_id) return
+
+    try {
+      // Primeiro tenta carregar da tabela consumo_acumulado (dados do dia atual)
+      const hoje = new Date().toISOString().split('T')[0]
+      const { data: acumuladoData, error: acumuladoError } = await supabase
+        .from('consumo_acumulado')
+        .select('energia_total_kwh, potencia_total_kw, gas_total_m3, vazao_total_l')
+        .eq('condominio_id', userInfo.condominio_id)
+        .eq('device_id', deviceId)
+        .eq('data', hoje)
+        .single()
+
+      if (!acumuladoError && acumuladoData) {
+        // Usa dados da tabela consumo_acumulado
+        setAccumulatedValues({
+          energiaTotal: parseFloat(acumuladoData.energia_total_kwh) || 0,
+          potenciaTotal: parseFloat(acumuladoData.potencia_total_kw) || 0,
+          gasTotal: parseFloat(acumuladoData.gas_total_m3) || 0,
+          vazaoTotal: parseFloat(acumuladoData.vazao_total_l) || 0
+        })
+        console.log('✅ Valores acumulados carregados da tabela consumo_acumulado:', acumuladoData)
+        return
+      }
+
+      // Se não encontrar na tabela consumo_acumulado, calcula a partir de leituras_sensores
+      const { data, error } = await supabase
+        .from('leituras_sensores')
+        .select('energia_kwh, potencia_kw, vazao_l_s')
+        .eq('device_id', deviceId)
+
+      if (error) {
+        console.error('Erro ao carregar valores acumulados:', error)
+        return
+      }
+
+      if (data && data.length > 0) {
+        // Energia é um valor acumulado, então pega o último (maior) valor
+        const energiaTotal = Math.max(...data.map(item => parseFloat(item.energia_kwh) || 0))
+
+        // Potência total é a soma de todas as potências
+        const potenciaTotal = data.reduce((sum, item) => {
+          return sum + (parseFloat(item.potencia_kw) || 0)
+        }, 0)
+
+        // Gás total é a soma de todos os consumos calculados
+        const gasTotal = data.reduce((sum, item) => {
+          return sum + ((parseFloat(item.potencia_kw) || 0) * 0.1)
+        }, 0)
+
+        // Para vazão acumulada, assume intervalo de 30 segundos entre cada leitura salva
+        const intervaloMedicao = 30 // 30 segundos
+        const vazaoTotal = data.reduce((sum, item) => {
+          return sum + ((parseFloat(item.vazao_l_s) || 0) * intervaloMedicao)
+        }, 0)
+
+        setAccumulatedValues({
+          energiaTotal: energiaTotal,
+          potenciaTotal: potenciaTotal,
+          gasTotal: gasTotal,
+          vazaoTotal: vazaoTotal
+        })
+
+        console.log('Valores acumulados calculados de leituras_sensores:', {
+          energiaTotal: energiaTotal.toFixed(2),
+          potenciaTotal: potenciaTotal.toFixed(2),
+          gasTotal: gasTotal.toFixed(4),
+          vazaoTotal: vazaoTotal.toFixed(2)
+        })
+      } else {
+        setAccumulatedValues({ energiaTotal: 0, potenciaTotal: 0, gasTotal: 0, vazaoTotal: 0 })
+      }
+    } catch (err) {
+      console.error('Erro ao carregar valores acumulados:', err)
+    }
+  }
+
+  // Função auxiliar para salvar dados acumulados manualmente (para teste)
+  const handleSaveAccumulatedManually = async () => {
+    if (historyData.length === 0) {
+      alert('Não há dados no histórico para salvar')
+      return
+    }
+
+    const energiaTotal = Math.max(...historyData.map(p => p.energia || 0), sensorData.energia_kWh || 0)
+    const potenciaTotal = historyData.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+    const gasTotal = historyData.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+    const vazaoTotal = historyData.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+
+    console.log('🔧 Salvamento manual acionado:', {
+      pontosNoHistorico: historyData.length,
+      energiaTotal: energiaTotal.toFixed(2),
+      potenciaTotal: potenciaTotal.toFixed(2),
+      gasTotal: gasTotal.toFixed(4),
+      vazaoTotal: vazaoTotal.toFixed(2)
+    })
+
+    await saveAccumulatedValues(energiaTotal, potenciaTotal, gasTotal, vazaoTotal)
+    alert('Dados acumulados salvos! Verifique o console para detalhes.')
   }
 
   // Função para carregar dispositivos disponíveis baseado no role do usuário
@@ -274,6 +512,117 @@ function Dashboard({ onLogout, user, userInfo }) {
     }
   }, [userInfo, deviceId])
 
+  // Carrega dados acumulados quando deviceId ou userInfo mudarem
+  useEffect(() => {
+    if (deviceId && userInfo?.condominio_id) {
+      console.log('🔄 Carregando dados acumulados...', { deviceId, condominio_id: userInfo.condominio_id })
+      loadAccumulatedValues()
+    } else {
+      console.log('⏸️ Aguardando deviceId e condominio_id para carregar dados acumulados', { 
+        deviceId, 
+        condominio_id: userInfo?.condominio_id 
+      })
+    }
+  }, [deviceId, userInfo?.condominio_id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Configura intervalo para salvar dados a cada 30 segundos
+  useEffect(() => {
+    if (!deviceId) {
+      // Limpa o intervalo se não houver deviceId
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current)
+        saveIntervalRef.current = null
+      }
+      if (accumulatedIntervalRef.current) {
+        clearInterval(accumulatedIntervalRef.current)
+        accumulatedIntervalRef.current = null
+      }
+      return
+    }
+
+    // Limpa intervalos existentes antes de configurar novos
+    if (saveIntervalRef.current) {
+      clearInterval(saveIntervalRef.current)
+    }
+    if (accumulatedIntervalRef.current) {
+      clearInterval(accumulatedIntervalRef.current)
+    }
+
+    // Configura intervalo de 30 segundos para salvar dados individuais
+    saveIntervalRef.current = setInterval(() => {
+      if (pendingDataRef.current) {
+        console.log('Salvando dados no banco (intervalo de 30 segundos)...')
+        saveToDatabase(pendingDataRef.current)
+          .then(() => {
+            // Recarrega valores acumulados após salvar
+            loadAccumulatedValues()
+          })
+          .catch(err => {
+            console.error('Erro ao salvar no banco (não crítico):', err)
+          })
+        // Limpa os dados pendentes após salvar
+        pendingDataRef.current = null
+      } else {
+        console.log('Nenhum dado pendente para salvar')
+      }
+    }, 30 * 1000) // 30 segundos em milissegundos
+
+    // Configura intervalo de 1 minuto para salvar dados acumulados (reduzido para testes)
+    accumulatedIntervalRef.current = setInterval(() => {
+      console.log('⏰ Intervalo de salvamento de dados acumulados executado')
+      // Acessa os valores mais recentes através de uma função
+      const calcularESalvarAcumulados = () => {
+        // Usa uma função callback para acessar os valores mais recentes do estado
+        setHistoryData(currentHistory => {
+          console.log('📊 Histórico atual tem', currentHistory.length, 'pontos')
+          if (currentHistory.length > 0) {
+            setSensorData(currentSensor => {
+              // Calcula valores acumulados do histórico atual
+              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
+              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+
+              console.log('💾 Calculando e salvando dados acumulados no banco...', {
+                pontosNoHistorico: currentHistory.length,
+                energiaTotal: energiaTotal.toFixed(2),
+                potenciaTotal: potenciaTotal.toFixed(2),
+                gasTotal: gasTotal.toFixed(4),
+                vazaoTotal: vazaoTotal.toFixed(2)
+              })
+              saveAccumulatedValues(energiaTotal, potenciaTotal, gasTotal, vazaoTotal)
+              return currentSensor
+            })
+          } else {
+            console.warn('⚠️ Histórico vazio, não é possível salvar dados acumulados')
+          }
+          return currentHistory
+        })
+      }
+      calcularESalvarAcumulados()
+    }, 1 * 60 * 1000) // 1 minuto (reduzido de 5 minutos para facilitar testes)
+
+    // Limpa os intervalos quando o componente desmontar ou deviceId mudar
+    return () => {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current)
+        saveIntervalRef.current = null
+      }
+      if (accumulatedIntervalRef.current) {
+        clearInterval(accumulatedIntervalRef.current)
+        accumulatedIntervalRef.current = null
+      }
+    }
+
+    // Limpa o intervalo quando o componente desmontar ou deviceId mudar
+    return () => {
+      if (saveIntervalRef.current) {
+        clearInterval(saveIntervalRef.current)
+        saveIntervalRef.current = null
+      }
+    }
+  }, [deviceId])
+
   // Conexão MQTT - completamente opcional e não bloqueante
   useEffect(() => {
     // Delay maior para garantir que o componente está totalmente renderizado
@@ -337,7 +686,9 @@ function Dashboard({ onLogout, user, userInfo }) {
                 energia_kWh: data.energia_kWh || 0
               }
               
+              // Atualiza os dados do sensor imediatamente
               setSensorData(processedData)
+              console.log('✅ Dados do sensor atualizados:', processedData)
               
               // Adiciona ao histórico com timestamp
               const timestamp = new Date().toLocaleTimeString('pt-BR')
@@ -352,17 +703,34 @@ function Dashboard({ onLogout, user, userInfo }) {
                 gas: (processedData.potencia_kW * 0.1)
               }
               
+              // Atualiza o histórico imediatamente
               setHistoryData(prev => {
                 const newData = [...prev, historyPoint]
-                return newData.slice(-maxHistoryPoints) // Mantém apenas os últimos N pontos
+                const sliced = newData.slice(-maxHistoryPoints) // Mantém apenas os últimos N pontos
+                console.log('✅ Histórico atualizado:', sliced.length, 'pontos')
+                
+                // Salva dados acumulados automaticamente quando há pelo menos 10 pontos
+                if (sliced.length >= 10 && sliced.length % 10 === 0) {
+                  const energiaTotal = Math.max(...sliced.map(p => p.energia || 0), processedData.energia_kWh || 0)
+                  const potenciaTotal = sliced.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+                  const gasTotal = sliced.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+                  const vazaoTotal = sliced.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+                  
+                  console.log('💾 Salvando dados acumulados automaticamente (a cada 10 pontos)...')
+                  saveAccumulatedValues(energiaTotal, potenciaTotal, gasTotal, vazaoTotal)
+                }
+                
+                return sliced
               })
               
-              // Salva no banco de dados (não bloqueia se falhar)
-              saveToDatabase(processedData).catch(err => {
-                console.error('Erro ao salvar no banco (não crítico):', err)
-              })
+              // Armazena os dados mais recentes para salvar a cada 30 segundos (opcional)
+              pendingDataRef.current = processedData
               
-              console.log('Dados recebidos:', processedData)
+              console.log('✅ Dados recebidos e processados:', {
+                sensorData: processedData,
+                timestamp: timestamp,
+                historySize: historyData.length + 1
+              })
             } catch (error) {
               console.error('Erro ao parsear JSON:', error)
             }
@@ -411,14 +779,40 @@ function Dashboard({ onLogout, user, userInfo }) {
     }
   }, []) // Executa apenas uma vez na montagem
 
-  const consumoGas = (sensorData.potencia_kW * 0.1).toFixed(4)
-
-  // Calcula vazão acumulada (soma de todas as vazões do histórico)
-  // Assumindo intervalo de 5 segundos entre cada medição (conforme código Arduino)
-  const intervaloMedicao = 5 // segundos
-  const vazaoAcumulada = historyData.reduce((total, ponto) => {
-    return total + (ponto.vazao * intervaloMedicao) // vazão em L/s * segundos = litros
+  // Calcula valores acumulados a partir do histórico em memória
+  // Isso garante que os dados apareçam mesmo sem salvar no banco
+  const consumoGasCalculado = historyData.reduce((total, ponto) => {
+    return total + ponto.gas
   }, 0)
+  
+  const energiaTotalCalculada = historyData.length > 0
+    ? Math.max(...historyData.map(p => p.energia || 0))
+    : sensorData.energia_kWh
+  
+  const potenciaTotalCalculada = historyData.reduce((total, ponto) => {
+    return total + (ponto.potencia || 0)
+  }, 0)
+  
+  const vazaoAcumuladaCalculada = historyData.reduce((total, ponto) => {
+    return total + (ponto.vazao * 30) // 30 segundos entre cada leitura
+  }, 0)
+
+  // Usa valores do banco se disponíveis, senão usa valores calculados do histórico em memória
+  const consumoGas = accumulatedValues.gasTotal > 0 
+    ? accumulatedValues.gasTotal.toFixed(4) 
+    : consumoGasCalculado.toFixed(4)
+  
+  const energiaTotal = accumulatedValues.energiaTotal > 0 
+    ? accumulatedValues.energiaTotal.toFixed(2) 
+    : energiaTotalCalculada.toFixed(2)
+  
+  const potenciaTotal = accumulatedValues.potenciaTotal > 0 
+    ? accumulatedValues.potenciaTotal.toFixed(2) 
+    : potenciaTotalCalculada.toFixed(2)
+  
+  const vazaoAcumulada = accumulatedValues.vazaoTotal > 0 
+    ? accumulatedValues.vazaoTotal 
+    : vazaoAcumuladaCalculada
 
   return (
     <div className="dashboard-container">
@@ -441,6 +835,24 @@ function Dashboard({ onLogout, user, userInfo }) {
           </div>
         </div>
         <div className="header-right">
+          {userInfo && deviceId && (
+            <button 
+              onClick={handleSaveAccumulatedManually}
+              style={{
+                marginRight: '15px',
+                padding: '8px 16px',
+                backgroundColor: '#004B87',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '12px'
+              }}
+              title="Salvar dados acumulados manualmente (para teste)"
+            >
+              💾 Salvar Acumulados
+            </button>
+          )}
           {userInfo && (
             <div className="user-info" style={{ marginRight: '15px', fontSize: '14px', color: '#666' }}>
               <span style={{ fontWeight: '600' }}>{userInfo.role || 'Usuário'}</span>
@@ -530,11 +942,11 @@ function Dashboard({ onLogout, user, userInfo }) {
           </div>
           <div className="kpi-card highlight">
             <div className="kpi-label">Potência Térmica</div>
-            <div className="kpi-value">{sensorData.potencia_kW.toFixed(2)} kW</div>
+            <div className="kpi-value">{potenciaTotal} kW</div>
           </div>
           <div className="kpi-card highlight">
             <div className="kpi-label">Energia Acumulada</div>
-            <div className="kpi-value">{sensorData.energia_kWh.toFixed(2)} kWh</div>
+            <div className="kpi-value">{energiaTotal} kWh</div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Vazão Acumulada</div>
@@ -607,13 +1019,22 @@ function Dashboard({ onLogout, user, userInfo }) {
             </ResponsiveContainer>
           </div>
 
-          {/* Gráfico de Vazão */}
+          {/* Gráfico de Vazão Acumulada */}
           <div className="chart-card">
             <div className="chart-header">
-              <h3>Vazão de Água</h3>
+              <h3>Vazão Acumulada de Água</h3>
             </div>
             <ResponsiveContainer width="100%" height={400}>
-              <LineChart data={historyData}>
+              <LineChart data={historyData.map((item, index) => {
+                // Calcula vazão acumulada progressivamente
+                const vazaoAcumulada = historyData.slice(0, index + 1).reduce((total, ponto) => {
+                  return total + ((ponto.vazao || 0) * 30) // 30 segundos entre cada leitura
+                }, 0)
+                return {
+                  ...item,
+                  vazaoAcumulada: vazaoAcumulada
+                }
+              })}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
                 <XAxis 
                   dataKey="time" 
@@ -625,7 +1046,7 @@ function Dashboard({ onLogout, user, userInfo }) {
                   stroke="#666"
                   fontSize={12}
                   tick={{ fill: '#666' }}
-                  label={{ value: 'Vazão (L/s)', angle: -90, position: 'insideLeft' }}
+                  label={{ value: 'Vazão Acumulada (L)', angle: -90, position: 'insideLeft' }}
                 />
                 <Tooltip 
                   contentStyle={{ 
@@ -633,12 +1054,13 @@ function Dashboard({ onLogout, user, userInfo }) {
                     border: '1px solid #00B2A9',
                     borderRadius: '8px'
                   }}
+                  formatter={(value) => [`${parseFloat(value).toFixed(2)} L`, 'Vazão Acumulada']}
                 />
                 <Legend />
                 <Line 
                   type="monotone" 
-                  dataKey="vazao" 
-                  name="Vazão (L/s)" 
+                  dataKey="vazaoAcumulada" 
+                  name="Vazão Acumulada (L)" 
                   stroke="#00B2A9" 
                   strokeWidth={3}
                   dot={{ fill: '#00B2A9', r: 4 }}
@@ -886,7 +1308,7 @@ function Dashboard({ onLogout, user, userInfo }) {
 
         {/* Conteúdo do Histórico de Consumo */}
         {activeTab === 'history' && (
-          <ConsumptionHistory deviceId={deviceId} userInfo={userInfo} />
+          <ConsumptionHistory deviceId={deviceId} userInfo={userInfo} historyData={historyData} />
         )}
       </main>
     </div>
