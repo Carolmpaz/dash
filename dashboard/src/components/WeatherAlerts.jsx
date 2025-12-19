@@ -8,6 +8,7 @@ function WeatherAlerts({ userInfo, deviceId }) {
   const [alerts, setAlerts] = useState([])
   const [loading, setLoading] = useState(false)
   const [temperatureThreshold, setTemperatureThreshold] = useState(5) // Variação de 5°C
+  const [weatherError, setWeatherError] = useState(null) // Erro ao carregar dados meteorológicos
 
   useEffect(() => {
     if (userInfo?.condominio_id) {
@@ -19,46 +20,84 @@ function WeatherAlerts({ userInfo, deviceId }) {
   }, [userInfo, deviceId])
 
   const loadWeatherData = async () => {
-    if (!userInfo?.condominio_id) return
+    if (!userInfo?.condominio_id) {
+      console.error('❌ [WeatherAlerts] condominio_id não disponível')
+      setWeatherError('Condomínio não identificado')
+      return
+    }
 
+    console.log('🌤️ [WeatherAlerts] Iniciando carregamento de dados meteorológicos...')
     setLoading(true)
+    setWeatherError(null) // Limpa erros anteriores
+    
     try {
-      // Busca endereço do condomínio
-      const { data: condominioData } = await supabase
-        .from('condominios')
-        .select('endereco')
-        .eq('id', userInfo.condominio_id)
-        .single()
-
-      if (condominioData?.endereco) {
-        const coords = await getCoordinatesFromAddress(condominioData.endereco)
-        if (coords) {
-          const weather = await fetchCurrentWeather(coords.lat, coords.lon)
-          if (weather) {
-            setWeatherData(weather)
-            checkTemperatureAlerts(weather)
-            // Salva no banco
-            await supabase
-              .from('dados_meteorologicos')
-              .insert({
-                condominio_id: userInfo.condominio_id,
-                temperatura_ambiente: weather.temperatura,
-                umidade: weather.umidade,
-                pressao: weather.pressao,
-                velocidade_vento: weather.velocidade_vento,
-                descricao: weather.descricao
-              })
-          }
-        }
+      // Sempre usa "São Paulo, SP" como endereço padrão
+      const enderecoPadrao = 'São Paulo, SP'
+      console.log('📍 [WeatherAlerts] Usando endereço padrão:', enderecoPadrao)
+      
+      const coords = await getCoordinatesFromAddress(enderecoPadrao)
+      if (!coords) {
+        const errorMsg = 'Não foi possível obter coordenadas. Verifique se a API key está configurada.'
+        console.error('❌ [WeatherAlerts]', errorMsg)
+        setWeatherError(errorMsg)
+        setLoading(false)
+        return
+      }
+      
+      console.log('✅ [WeatherAlerts] Coordenadas obtidas:', coords)
+      const weather = await fetchCurrentWeather(coords.lat, coords.lon)
+      
+      if (!weather) {
+        const errorMsg = 'Não foi possível obter dados meteorológicos. Verifique se a API key está configurada no arquivo .env'
+        console.error('❌ [WeatherAlerts]', errorMsg)
+        setWeatherError(errorMsg)
+        setLoading(false)
+        return
+      }
+      
+      console.log('✅ [WeatherAlerts] Dados meteorológicos obtidos:', weather)
+      setWeatherData(weather)
+      setWeatherError(null) // Limpa erro se conseguiu carregar
+      
+      // Verifica alertas
+      console.log('🔍 [WeatherAlerts] Verificando alertas de temperatura...')
+      checkTemperatureAlerts(weather)
+      
+      // Salva no banco
+      console.log('💾 [WeatherAlerts] Salvando dados no banco...')
+      const { error: insertError } = await supabase
+        .from('dados_meteorologicos')
+        .insert({
+          condominio_id: userInfo.condominio_id,
+          temperatura_ambiente: weather.temperatura,
+          umidade: weather.umidade,
+          pressao: weather.pressao,
+          velocidade_vento: weather.velocidade_vento,
+          descricao: weather.descricao
+        })
+      
+      if (insertError) {
+        console.error('❌ [WeatherAlerts] Erro ao salvar no banco:', insertError)
+        // Não define erro aqui, pois os dados foram carregados com sucesso
+      } else {
+        console.log('✅ [WeatherAlerts] Dados salvos no banco com sucesso')
       }
     } catch (err) {
-      console.error('Erro ao carregar dados meteorológicos:', err)
+      const errorMsg = `Erro ao carregar dados: ${err.message}`
+      console.error('❌ [WeatherAlerts] Erro ao carregar dados meteorológicos:', err)
+      console.error('   Stack:', err.stack)
+      setWeatherError(errorMsg)
     } finally {
       setLoading(false)
+      console.log('🏁 [WeatherAlerts] Carregamento finalizado')
     }
   }
 
   const checkTemperatureAlerts = (weather) => {
+    console.log('🔍 [WeatherAlerts] Verificando alertas de temperatura...')
+    console.log('   Temperatura atual:', weather.temperatura)
+    console.log('   Threshold:', temperatureThreshold)
+    
     const newAlerts = []
     
     // Busca última temperatura registrada
@@ -68,15 +107,29 @@ function WeatherAlerts({ userInfo, deviceId }) {
       .eq('condominio_id', userInfo.condominio_id)
       .order('reading_time', { ascending: false })
       .limit(2)
-      .then(({ data }) => {
+      .then(({ data, error }) => {
+        if (error) {
+          console.error('❌ [WeatherAlerts] Erro ao buscar dados para alertas:', error)
+          return
+        }
+        
+        console.log('📊 [WeatherAlerts] Dados encontrados:', data?.length || 0, 'leituras')
+        
         if (data && data.length >= 2) {
           const previousTemp = data[1].temperatura_ambiente
           const currentTemp = weather.temperatura
           const variation = Math.abs(currentTemp - previousTemp)
+          
+          console.log('📊 [WeatherAlerts] Comparação:', {
+            temperatura_anterior: previousTemp,
+            temperatura_atual: currentTemp,
+            variacao: variation,
+            threshold: temperatureThreshold
+          })
 
           if (variation >= temperatureThreshold) {
             const isIncrease = currentTemp > previousTemp
-            newAlerts.push({
+            const alert = {
               type: isIncrease ? 'increase' : 'decrease',
               message: isIncrease 
                 ? `⚠️ Aumento significativo de temperatura detectado: ${variation.toFixed(1)}°C. Considere reduzir o setpoint da caldeira.`
@@ -84,10 +137,22 @@ function WeatherAlerts({ userInfo, deviceId }) {
               temperature: currentTemp,
               variation: variation.toFixed(1),
               timestamp: new Date().toLocaleString('pt-BR')
-            })
+            }
+            
+            newAlerts.push(alert)
             setAlerts(newAlerts)
+            console.log('⚠️ [WeatherAlerts] ALERTA DISPARADO:', alert)
+          } else {
+            console.log('✅ [WeatherAlerts] Variação dentro do limite, sem alerta')
+            setAlerts([])
           }
+        } else {
+          console.log('ℹ️ [WeatherAlerts] Menos de 2 leituras disponíveis, aguardando mais dados...')
+          setAlerts([])
         }
+      })
+      .catch(err => {
+        console.error('❌ [WeatherAlerts] Erro ao verificar alertas:', err)
       })
   }
 
@@ -167,9 +232,35 @@ function WeatherAlerts({ userInfo, deviceId }) {
         </div>
       )}
 
-      {!weatherData && !loading && (
+      {weatherError && (
+        <div className="weather-error" style={{
+          padding: '20px',
+          backgroundColor: '#fee',
+          border: '1px solid #fcc',
+          borderRadius: '8px',
+          margin: '20px 0',
+          color: '#c33'
+        }}>
+          <h4 style={{ marginTop: 0, color: '#c33' }}>❌ Erro ao Carregar Dados Meteorológicos</h4>
+          <p>{weatherError}</p>
+          <div style={{ marginTop: '15px', padding: '15px', backgroundColor: '#fff', borderRadius: '5px' }}>
+            <strong>Como resolver:</strong>
+            <ol style={{ marginTop: '10px', paddingLeft: '20px' }}>
+              <li>Crie um arquivo <code>.env</code> na pasta <code>dash-1/dashboard/</code></li>
+              <li>Adicione: <code>VITE_WEATHER_API_KEY=sua_chave_aqui</code></li>
+              <li>Obtenha uma chave gratuita em: <a href="https://openweathermap.org/api" target="_blank" rel="noopener noreferrer">https://openweathermap.org/api</a></li>
+              <li>Reinicie o servidor (Ctrl+C e depois <code>npm run dev</code>)</li>
+            </ol>
+            <p style={{ marginTop: '15px', fontSize: '14px', color: '#666' }}>
+              <strong>Dica:</strong> Abra o console do navegador (F12) para ver logs detalhados do erro.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!weatherData && !loading && !weatherError && (
         <div className="no-weather-data">
-          <p>Configure o endereço do condomínio para receber alertas meteorológicos.</p>
+          <p>Clique em "Atualizar Dados" para carregar informações meteorológicas de São Paulo, SP</p>
         </div>
       )}
     </div>

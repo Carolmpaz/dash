@@ -9,8 +9,6 @@ function SystemConfig({ userInfo, deviceId, condominioId, onConfigUpdated }) {
     temp_max_critica: 80.0,
     delta_t_minimo: 5.0,
     potencia_maxima_kw: 50.0,
-    alerta_email: false,
-    alerta_whatsapp: false,
     intervalo_medicao_segundos: 5
   })
   const [loading, setLoading] = useState(false)
@@ -56,8 +54,6 @@ function SystemConfig({ userInfo, deviceId, condominioId, onConfigUpdated }) {
           temp_max_critica: parseFloat(data.temp_max_critica) || 80.0,
           delta_t_minimo: parseFloat(data.delta_t_minimo) || 5.0,
           potencia_maxima_kw: parseFloat(data.potencia_maxima_kw) || 50.0,
-          alerta_email: data.alerta_email || false,
-          alerta_whatsapp: data.alerta_whatsapp || false,
           intervalo_medicao_segundos: data.intervalo_medicao_segundos || 5
         })
       }
@@ -87,8 +83,6 @@ function SystemConfig({ userInfo, deviceId, condominioId, onConfigUpdated }) {
         temp_max_critica: parseFloat(config.temp_max_critica),
         delta_t_minimo: parseFloat(config.delta_t_minimo),
         potencia_maxima_kw: parseFloat(config.potencia_maxima_kw),
-        alerta_email: config.alerta_email,
-        alerta_whatsapp: config.alerta_whatsapp,
         intervalo_medicao_segundos: parseInt(config.intervalo_medicao_segundos)
       }
 
@@ -237,30 +231,6 @@ function SystemConfig({ userInfo, deviceId, condominioId, onConfigUpdated }) {
                           value={config.intervalo_medicao_segundos}
                           onChange={(e) => setConfig({...config, intervalo_medicao_segundos: e.target.value})}
                         />
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="config-section">
-                    <h3>Alertas</h3>
-                    <div className="config-row">
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <input
-                          type="checkbox"
-                          checked={config.alerta_email}
-                          onChange={(e) => setConfig({...config, alerta_email: e.target.checked})}
-                        />
-                        Ativar alertas por e-mail
-                      </label>
-                    </div>
-                    <div className="config-row">
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <input
-                          type="checkbox"
-                          checked={config.alerta_whatsapp}
-                          onChange={(e) => setConfig({...config, alerta_whatsapp: e.target.checked})}
-                        />
-                        Ativar alertas por WhatsApp
                       </label>
                     </div>
                   </div>

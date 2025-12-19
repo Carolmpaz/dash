@@ -14,6 +14,8 @@ function CostManagement({ deviceId, userInfo, historyData: realTimeHistoryData =
   const [loading, setLoading] = useState(false)
   const [chartType, setChartType] = useState('bar')
   const [totalCost, setTotalCost] = useState(0)
+  const [weatherData, setWeatherData] = useState([])
+  const [dailyCostsWithTemp, setDailyCostsWithTemp] = useState([])
 
   // Combina dados do banco com dados em tempo real
   const combineData = (dbData, realTimeData) => {
@@ -81,11 +83,81 @@ function CostManagement({ deviceId, userInfo, historyData: realTimeHistoryData =
     }
   }
 
+  // Carrega dados meteorológicos do banco e calcula temperatura média por dia
+  const loadWeatherData = async () => {
+    if (!userInfo?.condominio_id) return
+
+    try {
+      const start = new Date(startDate)
+      const end = new Date(endDate)
+      end.setHours(23, 59, 59, 999)
+
+      const { data, error } = await supabase
+        .from('dados_meteorologicos')
+        .select('*')
+        .eq('condominio_id', userInfo.condominio_id)
+        .gte('reading_time', start.toISOString())
+        .lte('reading_time', end.toISOString())
+        .order('reading_time', { ascending: true })
+
+      if (error) {
+        console.error('Erro ao carregar dados meteorológicos:', error)
+        setWeatherData([])
+        return
+      }
+
+      if (data && data.length > 0) {
+        // Agrupa por data e calcula temperatura média
+        const groupedByDate = {}
+        
+        data.forEach(item => {
+          const date = new Date(item.reading_time).toLocaleDateString('pt-BR')
+          if (!groupedByDate[date]) {
+            groupedByDate[date] = {
+              date: date,
+              temperaturas: [],
+              count: 0
+            }
+          }
+          
+          if (item.temperatura_ambiente != null) {
+            groupedByDate[date].temperaturas.push(parseFloat(item.temperatura_ambiente))
+            groupedByDate[date].count += 1
+          }
+        })
+
+        // Calcula temperatura média por dia
+        const dailyWeather = Object.values(groupedByDate).map(day => ({
+          date: day.date,
+          temperaturaMedia: day.temperaturas.length > 0
+            ? parseFloat((day.temperaturas.reduce((sum, temp) => sum + temp, 0) / day.temperaturas.length).toFixed(2))
+            : 0
+        }))
+
+        setWeatherData(dailyWeather)
+        console.log('✅ Dados meteorológicos carregados:', dailyWeather.length, 'dias')
+      } else {
+        setWeatherData([])
+        console.log('⚠️ Nenhum dado meteorológico encontrado no período')
+      }
+    } catch (err) {
+      console.error('Erro ao carregar dados meteorológicos:', err)
+      setWeatherData([])
+    }
+  }
+
   // Processa dados combinados quando dbCostData ou realTimeHistoryData mudarem
   useEffect(() => {
+    console.log('🔄 [CostManagement] Processando dados combinados...', {
+      dbCostData: dbCostData.length,
+      realTimeHistoryData: realTimeHistoryData?.length || 0,
+      deviceId: deviceId
+    })
+    
     const combined = combineData(dbCostData, realTimeHistoryData)
     
     if (combined.length > 0) {
+      console.log('✅ [CostManagement] Dados combinados:', combined.length, 'pontos')
       // Agrupa por data
       const groupedByDate = {}
       
@@ -135,18 +207,61 @@ function CostManagement({ deviceId, userInfo, historyData: realTimeHistoryData =
       setMonthlyCosts(monthly)
       setTotalCost(daily.reduce((sum, day) => sum + day.custo, 0))
       console.log(`✅ Custos atualizados: ${combined.length} pontos (${dbCostData.length} do banco + ${realTimeHistoryData.length} em tempo real)`)
+      
+      // Combina dados de custo com temperatura média
+      const costsWithTemp = daily.map(costDay => {
+        const weatherDay = weatherData.find(w => w.date === costDay.date)
+        return {
+          ...costDay,
+          temperaturaMedia: weatherDay?.temperaturaMedia || 0
+        }
+      })
+      setDailyCostsWithTemp(costsWithTemp)
     } else {
       setDailyCosts([])
       setMonthlyCosts([])
       setTotalCost(0)
     }
-  }, [dbCostData, realTimeHistoryData])
+  }, [dbCostData, realTimeHistoryData, weatherData])
 
   useEffect(() => {
     if (deviceId) {
       loadCostData()
     }
-  }, [deviceId, startDate, endDate])
+    if (userInfo?.condominio_id) {
+      loadWeatherData()
+    }
+  }, [deviceId, startDate, endDate, userInfo?.condominio_id])
+
+  // Atualização automática periódica (a cada 30 segundos)
+  useEffect(() => {
+    if (!deviceId) return
+
+    // Carrega imediatamente ao montar
+    loadCostData()
+    if (userInfo?.condominio_id) {
+      loadWeatherData()
+    }
+
+    const interval = setInterval(() => {
+      console.log('🔄 [CostManagement] Atualizando dados automaticamente...')
+      loadCostData()
+      if (userInfo?.condominio_id) {
+        loadWeatherData()
+      }
+    }, 30000) // 30 segundos
+
+    return () => clearInterval(interval)
+  }, [deviceId, userInfo?.condominio_id])
+
+  // Log quando historyData mudar
+  useEffect(() => {
+    console.log('📊 [CostManagement] historyData atualizado:', {
+      tamanho: realTimeHistoryData?.length || 0,
+      deviceId: deviceId,
+      ultimoPonto: realTimeHistoryData?.[realTimeHistoryData.length - 1] || null
+    })
+  }, [realTimeHistoryData, deviceId])
 
   return (
     <div className="cost-management-container">
@@ -255,6 +370,72 @@ function CostManagement({ deviceId, userInfo, historyData: realTimeHistoryData =
                 </LineChart>
               </ResponsiveContainer>
             </div>
+
+            {/* Gráfico Comparativo: Gasto vs Temperatura Ambiente */}
+            {dailyCostsWithTemp.length > 0 && dailyCostsWithTemp.some(day => day.temperaturaMedia > 0) && (
+              <div className="cost-chart-card full-width">
+                <div className="chart-header">
+                  <h3>Gasto Diário vs Temperatura Ambiente Média</h3>
+                  <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
+                    Comparação entre o custo diário e a temperatura média do dia (dados da API meteorológica)
+                  </p>
+                </div>
+                <ResponsiveContainer width="100%" height={400}>
+                  <LineChart data={dailyCostsWithTemp}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e0e0e0" />
+                    <XAxis dataKey="date" stroke="#666" fontSize={12} tick={{ fill: '#666' }} />
+                    <YAxis 
+                      yAxisId="left" 
+                      stroke="#666" 
+                      fontSize={12} 
+                      tick={{ fill: '#666' }} 
+                      label={{ value: 'Custo (R$)', angle: -90, position: 'insideLeft' }} 
+                    />
+                    <YAxis 
+                      yAxisId="right" 
+                      orientation="right" 
+                      stroke="#666" 
+                      fontSize={12} 
+                      tick={{ fill: '#666' }} 
+                      label={{ value: 'Temperatura (°C)', angle: 90, position: 'insideRight' }} 
+                    />
+                    <Tooltip 
+                      contentStyle={{ 
+                        backgroundColor: '#fff', 
+                        border: '1px solid #007CB6', 
+                        borderRadius: '8px' 
+                      }}
+                      formatter={(value, name) => {
+                        if (name === 'Custo (R$)') return [`R$ ${value.toFixed(2)}`, 'Custo']
+                        if (name === 'Temperatura Média (°C)') return [`${value.toFixed(2)}°C`, 'Temperatura']
+                        return [value, name]
+                      }}
+                    />
+                    <Legend />
+                    <Line 
+                      yAxisId="left"
+                      type="monotone" 
+                      dataKey="custo" 
+                      name="Custo (R$)" 
+                      stroke="#004B87" 
+                      strokeWidth={3} 
+                      dot={{ fill: '#004B87', r: 5 }} 
+                      activeDot={{ r: 7 }} 
+                    />
+                    <Line 
+                      yAxisId="right"
+                      type="monotone" 
+                      dataKey="temperaturaMedia" 
+                      name="Temperatura Média (°C)" 
+                      stroke="#F89C1B" 
+                      strokeWidth={3} 
+                      dot={{ fill: '#F89C1B', r: 5 }} 
+                      activeDot={{ r: 7 }} 
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
 
             {monthlyCosts.length > 0 && (
               <div className="cost-chart-card full-width">

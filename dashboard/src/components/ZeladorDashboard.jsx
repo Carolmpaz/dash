@@ -35,6 +35,130 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
   const maxHistoryLoad = 100
   const saveIntervalRef = useRef(null)
   const pendingDataRef = useRef(null)
+  const accumulatedIntervalRef = useRef(null)
+
+  // Função para salvar dados agregados (médias de temperatura e totais) no banco
+  const saveAggregatedData = async () => {
+    return new Promise((resolve) => {
+      setHistoryData(currentHistory => {
+        setSensorData(currentSensor => {
+          if (!deviceId || !userInfo?.condominio_id || currentHistory.length === 0) {
+            console.log('⏸️ Aguardando dados para salvar agregados (Zelador):', { 
+              deviceId, 
+              condominio_id: userInfo?.condominio_id, 
+              historyLength: currentHistory.length 
+            })
+            resolve()
+            return currentSensor
+          }
+
+          (async () => {
+            try {
+              // Calcula médias das temperaturas
+              const tempIdaMedia = currentHistory.reduce((sum, p) => sum + (p.temp_ida || 0), 0) / currentHistory.length
+              const tempRetornoMedia = currentHistory.reduce((sum, p) => sum + (p.temp_retorno || 0), 0) / currentHistory.length
+              const deltaTMedia = currentHistory.reduce((sum, p) => sum + (p.deltaT || 0), 0) / currentHistory.length
+
+              // Calcula totais acumulados
+              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
+              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+
+              const hoje = new Date().toISOString().split('T')[0]
+
+              const { data: existing, error: checkError } = await supabase
+                .from('consumo_acumulado')
+                .select('id, energia_total_kwh, potencia_total_kw, gas_total_m3, vazao_total_l')
+                .eq('condominio_id', userInfo.condominio_id)
+                .eq('device_id', deviceId)
+                .eq('data', hoje)
+                .single()
+
+              if (checkError && checkError.code !== 'PGRST116') {
+                console.error('❌ Erro ao verificar dados agregados (Zelador):', checkError)
+                resolve()
+                return
+              }
+
+              const updateData = {
+                energia_total_kwh: Math.max(parseFloat(existing?.energia_total_kwh) || 0, energiaTotal),
+                potencia_total_kw: (parseFloat(existing?.potencia_total_kw) || 0) + potenciaTotal,
+                gas_total_m3: (parseFloat(existing?.gas_total_m3) || 0) + gasTotal,
+                vazao_total_l: (parseFloat(existing?.vazao_total_l) || 0) + vazaoTotal,
+                updated_at: new Date().toISOString()
+              }
+
+              if (existing) {
+                const { error: updateError } = await supabase
+                  .from('consumo_acumulado')
+                  .update(updateData)
+                  .eq('id', existing.id)
+
+                if (updateError) {
+                  console.error('❌ Erro ao atualizar dados agregados (Zelador):', updateError)
+                } else {
+                  console.log('✅ Dados agregados atualizados (Zelador):', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              } else {
+                const { error: insertError } = await supabase
+                  .from('consumo_acumulado')
+                  .insert({
+                    condominio_id: userInfo.condominio_id,
+                    device_id: deviceId,
+                    data: hoje,
+                    ...updateData
+                  })
+
+                if (insertError) {
+                  console.error('❌ Erro ao inserir dados agregados (Zelador):', insertError)
+                } else {
+                  console.log('✅ Dados agregados salvos (Zelador):', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              }
+
+              // Salva leitura agregada com médias
+              const { error: insertReadingError } = await supabase
+                .from('leituras_sensores')
+                .insert({
+                  device_id: deviceId,
+                  temp_ida: parseFloat(tempIdaMedia.toFixed(2)),
+                  temp_retorno: parseFloat(tempRetornoMedia.toFixed(2)),
+                  deltat: parseFloat(deltaTMedia.toFixed(2)),
+                  vazao_l_s: parseFloat((vazaoTotal / (currentHistory.length * 30)).toFixed(2)),
+                  potencia_kw: parseFloat((potenciaTotal / currentHistory.length).toFixed(4)),
+                  energia_kwh: parseFloat(energiaTotal.toFixed(4))
+                })
+
+              if (insertReadingError) {
+                console.error('❌ Erro ao salvar leitura agregada (Zelador):', insertReadingError)
+              } else {
+                console.log('✅ Leitura agregada salva com médias (Zelador)')
+              }
+
+              resolve()
+            } catch (err) {
+              console.error('❌ Erro ao salvar dados agregados (Zelador):', err)
+              resolve()
+            }
+          })()
+          
+          return currentSensor
+        })
+        return currentHistory
+      })
+    })
+  }
 
   // Função para salvar dados no Supabase
   const saveToDatabase = async (data, retries = 3) => {
@@ -120,7 +244,7 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             temp_ida: parseFloat(item.temp_ida) || 0,
             temp_retorno: parseFloat(item.temp_retorno) || 0,
             deltaT: parseFloat(item.deltat) || 0,
-            vazao: parseFloat(item.vazao_l_s) || 0,
+            vazao: (parseFloat(item.vazao_l_s) || 0) * 100, // Multiplicado por 100
             potencia: parseFloat(item.potencia_kw) || 0,
             energia: parseFloat(item.energia_kwh) || 0,
             gas: (parseFloat(item.potencia_kw) || 0) * 0.1
@@ -191,6 +315,34 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
     }
   }, [userInfo, deviceId])
 
+  // Configura intervalo para salvar dados agregados a cada 1 minuto
+  useEffect(() => {
+    if (!deviceId) {
+      if (accumulatedIntervalRef.current) {
+        clearInterval(accumulatedIntervalRef.current)
+        accumulatedIntervalRef.current = null
+      }
+      return
+    }
+
+    if (accumulatedIntervalRef.current) {
+      clearInterval(accumulatedIntervalRef.current)
+    }
+
+    // Configura intervalo de 1 minuto para salvar dados agregados (médias e totais)
+    accumulatedIntervalRef.current = setInterval(() => {
+      console.log('⏰ Intervalo de salvamento de dados agregados executado (Zelador)')
+      saveAggregatedData()
+    }, 1 * 60 * 1000) // 1 minuto
+
+    return () => {
+      if (accumulatedIntervalRef.current) {
+        clearInterval(accumulatedIntervalRef.current)
+        accumulatedIntervalRef.current = null
+      }
+    }
+  }, [deviceId])
+
   // Configura intervalo para salvar dados a cada 30 segundos
   useEffect(() => {
     if (!deviceId) {
@@ -258,7 +410,7 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
             temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
             deltaT: data.deltaT || 0,
-            vazao_L_s: data.vazao_L_s || 0,
+            vazao_L_s: (data.vazao_L_s || 0) * 100, // Multiplicado por 100
             potencia_kW: data.potencia_kW || 0,
             energia_kWh: data.energia_kWh || 0
           }
@@ -287,8 +439,29 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
             return sliced
           })
           
-          // Armazena os dados mais recentes para salvar a cada 30 segundos (opcional)
+          // Armazena os dados mais recentes para salvar a cada 30 segundos (backup)
           pendingDataRef.current = processedData
+          
+          // Salva imediatamente no banco quando chegam dados MQTT (se deviceId estiver disponível)
+          if (deviceId) {
+            saveToDatabase(processedData)
+              .then(() => {
+                console.log('✅ Dados MQTT salvos imediatamente no banco (Zelador)')
+                // Após salvar, verifica se deve salvar dados agregados (a cada 10 leituras)
+                setHistoryData(currentHistory => {
+                  if (currentHistory.length >= 10 && currentHistory.length % 10 === 0) {
+                    console.log('📊 Salvando dados agregados após 10 leituras (Zelador)...')
+                    setTimeout(() => saveAggregatedData(), 1000)
+                  }
+                  return currentHistory
+                })
+              })
+              .catch(err => {
+                console.warn('⚠️ Erro ao salvar dados MQTT imediatamente (não crítico):', err)
+              })
+          } else {
+            console.warn('⚠️ deviceId não disponível, dados MQTT serão salvos quando deviceId estiver configurado')
+          }
         } catch (error) {
           console.error('Erro ao parsear JSON:', error)
         }
@@ -340,7 +513,7 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
   const intervaloMedicao = 30 // 30 segundos entre cada leitura
   const vazaoAcumulada = historyData.reduce((total, ponto) => {
     return total + ((ponto.vazao || 0) * intervaloMedicao)
-  }, 0)
+  }, 0) || 0
 
   return (
     <div className="dashboard-container">
@@ -451,8 +624,12 @@ function ZeladorDashboard({ onLogout, user, userInfo }) {
                 <div className="kpi-value">{energiaTotal} kWh</div>
               </div>
               <div className="kpi-card">
+                <div className="kpi-label">Vazão Atual</div>
+                <div className="kpi-value">{(sensorData.vazao_L_s || 0).toFixed(2)} L/s</div>
+              </div>
+              <div className="kpi-card">
                 <div className="kpi-label">Vazão Acumulada</div>
-                <div className="kpi-value">{vazaoAcumulada.toFixed(2)} L</div>
+                <div className="kpi-value">{typeof vazaoAcumulada === 'number' ? vazaoAcumulada.toFixed(2) : '0.00'} L</div>
               </div>
             </div>
 

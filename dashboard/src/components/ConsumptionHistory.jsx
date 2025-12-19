@@ -20,7 +20,7 @@ function ConsumptionHistory({ deviceId, userInfo, historyData: realTimeHistoryDa
       temp_ida: parseFloat(item.temp_ida) || 0,
       temp_retorno: parseFloat(item.temp_retorno) || 0,
       deltaT: parseFloat(item.deltat) || 0,
-      vazao: parseFloat(item.vazao_l_s) || 0,
+      vazao: (parseFloat(item.vazao_l_s) || 0) * 100, // Multiplicado por 100
       potencia: parseFloat(item.potencia_kw) || 0,
       energia: parseFloat(item.energia_kwh) || 0,
       gas: (parseFloat(item.potencia_kw) || 0) * 0.1,
@@ -77,9 +77,16 @@ function ConsumptionHistory({ deviceId, userInfo, historyData: realTimeHistoryDa
 
   // Processa dados combinados quando dbHistoryData ou realTimeHistoryData mudarem
   useEffect(() => {
+    console.log('🔄 [ConsumptionHistory] Processando dados combinados...', {
+      dbHistoryData: dbHistoryData.length,
+      realTimeHistoryData: realTimeHistoryData?.length || 0,
+      deviceId: deviceId
+    })
+    
     const combined = combineData(dbHistoryData, realTimeHistoryData)
     
     if (combined.length > 0) {
+      console.log('✅ [ConsumptionHistory] Dados combinados:', combined.length, 'pontos')
       // Agrupa por data
       const groupedByDate = {}
       
@@ -148,6 +155,30 @@ function ConsumptionHistory({ deviceId, userInfo, historyData: realTimeHistoryDa
       loadConsumptionHistory()
     }
   }, [deviceId, startDate, endDate])
+
+  // Atualização automática periódica (a cada 30 segundos)
+  useEffect(() => {
+    if (!deviceId) return
+
+    // Carrega imediatamente ao montar
+    loadConsumptionHistory()
+
+    const interval = setInterval(() => {
+      console.log('🔄 [ConsumptionHistory] Atualizando dados automaticamente...')
+      loadConsumptionHistory()
+    }, 30000) // 30 segundos
+
+    return () => clearInterval(interval)
+  }, [deviceId])
+
+  // Log quando historyData mudar
+  useEffect(() => {
+    console.log('📊 [ConsumptionHistory] historyData atualizado:', {
+      tamanho: realTimeHistoryData?.length || 0,
+      deviceId: deviceId,
+      ultimoPonto: realTimeHistoryData?.[realTimeHistoryData.length - 1] || null
+    })
+  }, [realTimeHistoryData, deviceId])
 
   return (
     <div className="consumption-history-container">

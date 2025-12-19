@@ -46,7 +46,8 @@ function Dashboard({ onLogout, user, userInfo }) {
   // Função para salvar dados no Supabase com retry
   const saveToDatabase = async (data, retries = 3) => {
     if (!deviceId) {
-      console.warn('deviceId não disponível, não é possível salvar')
+      console.error('❌ ERRO: deviceId não disponível, não é possível salvar')
+      console.error('📊 Estado atual:', { deviceId, userInfo, availableDevices })
       return
     }
 
@@ -79,11 +80,28 @@ function Dashboard({ onLogout, user, userInfo }) {
           .select()
 
         if (error) {
-          console.error(`Erro ao salvar (tentativa ${attempt}/${retries}):`, error)
+          console.error(`❌ ERRO ao salvar (tentativa ${attempt}/${retries}):`, error)
+          console.error('📋 Detalhes do erro:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint
+          })
           
           // Se o erro for de dispositivo não encontrado, não tenta novamente
           if (error.code === '23503') {
-            console.warn('Dispositivo não encontrado no banco. Configure o device_id e cadastre o dispositivo.')
+            console.error('❌ ERRO: Dispositivo não encontrado no banco!')
+            console.error('📋 Verifique se o dispositivo ESP32_001 existe na tabela dispositivos')
+            console.error('📋 deviceId usado:', deviceId)
+            setDbConnected(false)
+            return
+          }
+          
+          // Se o erro for de permissão RLS
+          if (error.code === '42501' || error.message?.includes('permission') || error.message?.includes('policy')) {
+            console.error('❌ ERRO: Permissão negada (RLS)!')
+            console.error('📋 Verifique se o usuário está autenticado e tem permissão para inserir')
+            console.error('📋 userInfo:', userInfo)
             setDbConnected(false)
             return
           }
@@ -142,7 +160,7 @@ function Dashboard({ onLogout, user, userInfo }) {
             temp_ida: parseFloat(item.temp_ida) || 0,
             temp_retorno: parseFloat(item.temp_retorno) || 0,
             deltaT: parseFloat(item.deltat) || 0, // Corrigido: deltat (minúscula)
-            vazao: parseFloat(item.vazao_l_s) || 0, // Corrigido: vazao_l_s (minúscula)
+            vazao: (parseFloat(item.vazao_l_s) || 0) * 100, // Multiplicado por 100
             potencia: parseFloat(item.potencia_kw) || 0, // Corrigido: potencia_kw (minúscula)
             energia: parseFloat(item.energia_kwh) || 0, // Corrigido: energia_kwh (minúscula)
             gas: (parseFloat(item.potencia_kw) || 0) * 0.1
@@ -164,6 +182,134 @@ function Dashboard({ onLogout, user, userInfo }) {
     } finally {
       setLoadingHistory(false)
     }
+  }
+
+  // Função para salvar dados agregados (médias de temperatura e totais) no banco
+  const saveAggregatedData = async () => {
+    // Usa uma função para acessar os valores mais recentes do estado
+    return new Promise((resolve) => {
+      setHistoryData(currentHistory => {
+        setSensorData(currentSensor => {
+          if (!deviceId || !userInfo?.condominio_id || currentHistory.length === 0) {
+            console.log('⏸️ Aguardando dados para salvar agregados:', { 
+              deviceId, 
+              condominio_id: userInfo?.condominio_id, 
+              historyLength: currentHistory.length 
+            })
+            resolve()
+            return currentSensor
+          }
+
+          // Executa o salvamento de forma assíncrona
+          (async () => {
+            try {
+              // Calcula médias das temperaturas
+              const tempIdaMedia = currentHistory.reduce((sum, p) => sum + (p.temp_ida || 0), 0) / currentHistory.length
+              const tempRetornoMedia = currentHistory.reduce((sum, p) => sum + (p.temp_retorno || 0), 0) / currentHistory.length
+              const deltaTMedia = currentHistory.reduce((sum, p) => sum + (p.deltaT || 0), 0) / currentHistory.length
+
+              // Calcula totais acumulados
+              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
+              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+
+              const hoje = new Date().toISOString().split('T')[0]
+
+              // Verifica se já existe registro para hoje
+              const { data: existing, error: checkError } = await supabase
+                .from('consumo_acumulado')
+                .select('id, energia_total_kwh, potencia_total_kw, gas_total_m3, vazao_total_l')
+                .eq('condominio_id', userInfo.condominio_id)
+                .eq('device_id', deviceId)
+                .eq('data', hoje)
+                .single()
+
+              if (checkError && checkError.code !== 'PGRST116') {
+                console.error('❌ Erro ao verificar dados agregados:', checkError)
+                resolve()
+                return
+              }
+
+              const updateData = {
+                energia_total_kwh: Math.max(parseFloat(existing?.energia_total_kwh) || 0, energiaTotal),
+                potencia_total_kw: (parseFloat(existing?.potencia_total_kw) || 0) + potenciaTotal,
+                gas_total_m3: (parseFloat(existing?.gas_total_m3) || 0) + gasTotal,
+                vazao_total_l: (parseFloat(existing?.vazao_total_l) || 0) + vazaoTotal,
+                updated_at: new Date().toISOString()
+              }
+
+              if (existing) {
+                // Atualiza registro existente
+                const { error: updateError } = await supabase
+                  .from('consumo_acumulado')
+                  .update(updateData)
+                  .eq('id', existing.id)
+
+                if (updateError) {
+                  console.error('❌ Erro ao atualizar dados agregados:', updateError)
+                } else {
+                  console.log('✅ Dados agregados atualizados:', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              } else {
+                // Cria novo registro
+                const { error: insertError } = await supabase
+                  .from('consumo_acumulado')
+                  .insert({
+                    condominio_id: userInfo.condominio_id,
+                    device_id: deviceId,
+                    data: hoje,
+                    ...updateData
+                  })
+
+                if (insertError) {
+                  console.error('❌ Erro ao inserir dados agregados:', insertError)
+                } else {
+                  console.log('✅ Dados agregados salvos:', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              }
+
+              // Salva também uma leitura agregada na tabela leituras_sensores com médias
+              const { error: insertReadingError } = await supabase
+                .from('leituras_sensores')
+                .insert({
+                  device_id: deviceId,
+                  temp_ida: parseFloat(tempIdaMedia.toFixed(2)),
+                  temp_retorno: parseFloat(tempRetornoMedia.toFixed(2)),
+                  deltat: parseFloat(deltaTMedia.toFixed(2)),
+                  vazao_l_s: parseFloat((vazaoTotal / (currentHistory.length * 30)).toFixed(2)), // Média da vazão
+                  potencia_kw: parseFloat((potenciaTotal / currentHistory.length).toFixed(4)), // Média da potência
+                  energia_kwh: parseFloat(energiaTotal.toFixed(4))
+                })
+
+              if (insertReadingError) {
+                console.error('❌ Erro ao salvar leitura agregada:', insertReadingError)
+              } else {
+                console.log('✅ Leitura agregada salva com médias de temperatura')
+              }
+
+              resolve()
+            } catch (err) {
+              console.error('❌ Erro ao salvar dados agregados:', err)
+              resolve()
+            }
+          })()
+          
+          return currentSensor
+        })
+        return currentHistory
+      })
+    })
   }
 
   // Função para salvar dados acumulados no banco de dados
@@ -320,7 +466,7 @@ function Dashboard({ onLogout, user, userInfo }) {
         // Para vazão acumulada, assume intervalo de 30 segundos entre cada leitura salva
         const intervaloMedicao = 30 // 30 segundos
         const vazaoTotal = data.reduce((sum, item) => {
-          return sum + ((parseFloat(item.vazao_l_s) || 0) * intervaloMedicao)
+          return sum + (((parseFloat(item.vazao_l_s) || 0) * 100) * intervaloMedicao) // Multiplicado por 100
         }, 0)
 
         setAccumulatedValues({
@@ -406,17 +552,24 @@ function Dashboard({ onLogout, user, userInfo }) {
         console.error('Erro ao carregar dispositivos:', error)
       } else if (data && data.length > 0) {
         setAvailableDevices(data)
+        console.log('✅ Dispositivos carregados:', data.length, 'dispositivo(s)')
         // Seleciona o primeiro dispositivo automaticamente
         if (!deviceId) {
-          setDeviceId(data[0].device_id)
+          const selectedDeviceId = data[0].device_id
+          setDeviceId(selectedDeviceId)
+          console.log('✅ deviceId selecionado automaticamente:', selectedDeviceId)
           // Carrega informações do condomínio
           if (data[0].condominios) {
             setCondominioInfo(data[0].condominios)
             setCondominio(data[0].condominios.nome)
           }
+        } else {
+          console.log('ℹ️ deviceId já está configurado:', deviceId)
         }
       } else {
-        console.warn('Nenhum dispositivo disponível para este usuário')
+        console.error('❌ ERRO: Nenhum dispositivo disponível para este usuário!')
+        console.error('📋 userInfo:', userInfo)
+        console.error('📋 Verifique se há dispositivos cadastrados para o condomínio:', userInfo?.condominio_id)
       }
     } catch (err) {
       console.error('Erro inesperado ao carregar dispositivos:', err)
@@ -499,7 +652,14 @@ function Dashboard({ onLogout, user, userInfo }) {
   // Carrega dados iniciais quando userInfo estiver disponível
   useEffect(() => {
     if (userInfo) {
+      console.log('📊 userInfo disponível, carregando dispositivos...', {
+        role: userInfo.role,
+        condominio_id: userInfo.condominio_id,
+        unidade: userInfo.unidade
+      })
       loadAvailableDevices()
+    } else {
+      console.log('⏸️ Aguardando userInfo...')
     }
   }, [userInfo])
 
@@ -567,40 +727,12 @@ function Dashboard({ onLogout, user, userInfo }) {
       }
     }, 30 * 1000) // 30 segundos em milissegundos
 
-    // Configura intervalo de 1 minuto para salvar dados acumulados (reduzido para testes)
+    // Configura intervalo de 1 minuto para salvar dados agregados (médias e totais)
     accumulatedIntervalRef.current = setInterval(() => {
-      console.log('⏰ Intervalo de salvamento de dados acumulados executado')
-      // Acessa os valores mais recentes através de uma função
-      const calcularESalvarAcumulados = () => {
-        // Usa uma função callback para acessar os valores mais recentes do estado
-        setHistoryData(currentHistory => {
-          console.log('📊 Histórico atual tem', currentHistory.length, 'pontos')
-          if (currentHistory.length > 0) {
-            setSensorData(currentSensor => {
-              // Calcula valores acumulados do histórico atual
-              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
-              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
-              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
-              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
-
-              console.log('💾 Calculando e salvando dados acumulados no banco...', {
-                pontosNoHistorico: currentHistory.length,
-                energiaTotal: energiaTotal.toFixed(2),
-                potenciaTotal: potenciaTotal.toFixed(2),
-                gasTotal: gasTotal.toFixed(4),
-                vazaoTotal: vazaoTotal.toFixed(2)
-              })
-              saveAccumulatedValues(energiaTotal, potenciaTotal, gasTotal, vazaoTotal)
-              return currentSensor
-            })
-          } else {
-            console.warn('⚠️ Histórico vazio, não é possível salvar dados acumulados')
-          }
-          return currentHistory
-        })
-      }
-      calcularESalvarAcumulados()
-    }, 1 * 60 * 1000) // 1 minuto (reduzido de 5 minutos para facilitar testes)
+      console.log('⏰ Intervalo de salvamento de dados agregados executado')
+      // Salva dados agregados com médias de temperatura e totais
+      saveAggregatedData()
+    }, 1 * 60 * 1000) // 1 minuto
 
     // Limpa os intervalos quando o componente desmontar ou deviceId mudar
     return () => {
@@ -681,7 +813,7 @@ function Dashboard({ onLogout, user, userInfo }) {
                 temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
                 temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
                 deltaT: data.deltaT || 0,
-                vazao_L_s: data.vazao_L_s || 0,
+                vazao_L_s: (data.vazao_L_s || 0) * 100, // Multiplicado por 100
                 potencia_kW: data.potencia_kW || 0,
                 energia_kWh: data.energia_kWh || 0
               }
@@ -689,6 +821,7 @@ function Dashboard({ onLogout, user, userInfo }) {
               // Atualiza os dados do sensor imediatamente
               setSensorData(processedData)
               console.log('✅ Dados do sensor atualizados:', processedData)
+              console.log('📊 Vazão processada:', processedData.vazao_L_s, 'L/s')
               
               // Adiciona ao histórico com timestamp
               const timestamp = new Date().toLocaleTimeString('pt-BR')
@@ -723,13 +856,49 @@ function Dashboard({ onLogout, user, userInfo }) {
                 return sliced
               })
               
-              // Armazena os dados mais recentes para salvar a cada 30 segundos (opcional)
+              // Armazena os dados mais recentes para salvar a cada 30 segundos (backup)
               pendingDataRef.current = processedData
+              
+              // Salva imediatamente no banco quando chegam dados MQTT (se deviceId estiver disponível)
+              console.log('🔍 Verificando deviceId antes de salvar:', {
+                deviceId: deviceId,
+                hasDeviceId: !!deviceId,
+                userInfo: userInfo,
+                availableDevices: availableDevices?.length || 0
+              })
+              
+              if (deviceId) {
+                console.log('💾 Tentando salvar dados MQTT no banco...')
+                saveToDatabase(processedData)
+                  .then((result) => {
+                    console.log('✅ Dados MQTT salvos imediatamente no banco', result)
+                    // Após salvar, verifica se deve salvar dados agregados (a cada 10 leituras)
+                    setHistoryData(currentHistory => {
+                      if (currentHistory.length >= 10 && currentHistory.length % 10 === 0) {
+                        console.log('📊 Salvando dados agregados após 10 leituras...')
+                        setTimeout(() => saveAggregatedData(), 1000) // Aguarda 1s para garantir que o histórico foi atualizado
+                      }
+                      return currentHistory
+                    })
+                  })
+                  .catch(err => {
+                    console.error('❌ ERRO ao salvar dados MQTT imediatamente:', err)
+                    console.error('   Stack:', err.stack)
+                    // Continua mesmo se falhar - o intervalo de 30s vai tentar novamente
+                  })
+              } else {
+                console.error('❌ ERRO: deviceId não disponível!')
+                console.error('   deviceId:', deviceId)
+                console.error('   userInfo:', userInfo)
+                console.error('   availableDevices:', availableDevices)
+                console.error('   → Os dados MQTT serão salvos quando deviceId estiver configurado')
+              }
               
               console.log('✅ Dados recebidos e processados:', {
                 sensorData: processedData,
                 timestamp: timestamp,
-                historySize: historyData.length + 1
+                historySize: historyData.length + 1,
+                deviceId: deviceId
               })
             } catch (error) {
               console.error('Erro ao parsear JSON:', error)
@@ -794,7 +963,7 @@ function Dashboard({ onLogout, user, userInfo }) {
   }, 0)
   
   const vazaoAcumuladaCalculada = historyData.reduce((total, ponto) => {
-    return total + (ponto.vazao * 30) // 30 segundos entre cada leitura
+    return total + ((ponto.vazao || 0) * 30) // 30 segundos entre cada leitura
   }, 0)
 
   // Usa valores do banco se disponíveis, senão usa valores calculados do histórico em memória
@@ -810,9 +979,10 @@ function Dashboard({ onLogout, user, userInfo }) {
     ? accumulatedValues.potenciaTotal.toFixed(2) 
     : potenciaTotalCalculada.toFixed(2)
   
-  const vazaoAcumulada = accumulatedValues.vazaoTotal > 0 
+  // Garante que vazaoAcumulada sempre tenha um valor válido
+  const vazaoAcumulada = (accumulatedValues.vazaoTotal > 0 
     ? accumulatedValues.vazaoTotal 
-    : vazaoAcumuladaCalculada
+    : vazaoAcumuladaCalculada) || 0
 
   return (
     <div className="dashboard-container">
@@ -949,8 +1119,12 @@ function Dashboard({ onLogout, user, userInfo }) {
             <div className="kpi-value">{energiaTotal} kWh</div>
           </div>
           <div className="kpi-card">
+            <div className="kpi-label">Vazão Atual</div>
+            <div className="kpi-value">{(sensorData.vazao_L_s || 0).toFixed(2)} L/s</div>
+          </div>
+          <div className="kpi-card">
             <div className="kpi-label">Vazão Acumulada</div>
-            <div className="kpi-value">{vazaoAcumulada.toFixed(2)} L</div>
+            <div className="kpi-value">{typeof vazaoAcumulada === 'number' ? vazaoAcumulada.toFixed(2) : '0.00'} L</div>
           </div>
         </div>
 

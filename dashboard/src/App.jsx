@@ -13,6 +13,7 @@ function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [user, setUser] = useState(null)
   const [userInfo, setUserInfo] = useState(null) // Informações do perfil (role, condominio_id, unidade)
+  const [loadingUserInfo, setLoadingUserInfo] = useState(false) // Estado para carregamento do userInfo
   const [showSignup, setShowSignup] = useState(false)
   const [loading, setLoading] = useState(true)
   const [hasError, setHasError] = useState(false)
@@ -29,6 +30,7 @@ function App() {
 
   // Função para carregar informações do perfil do usuário
   const loadUserInfo = async (userId) => {
+    setLoadingUserInfo(true)
     try {
       // Timeout para evitar travamento
       const timeoutPromise = new Promise((_, reject) => 
@@ -48,27 +50,51 @@ function App() {
         // Se a tabela não existe ou erro de permissão, apenas loga e continua
         if (userError.code === 'PGRST116') {
           // Tabela não encontrada ou usuário não cadastrado - normal para primeiro acesso
-          console.log('Usuário não encontrado na tabela users. Configure o perfil do usuário no Supabase.')
+          console.error('❌ ERRO: Usuário não encontrado na tabela users!')
+          console.error('   User ID:', userId)
+          console.error('   Código do erro:', userError.code)
+          console.error('   Mensagem:', userError.message)
+          console.error('   → Execute o script criar_usuarios_completo.sql para criar os usuários')
         } else {
-          console.warn('Erro ao carregar informações do usuário:', userError.message)
+          console.error('❌ ERRO ao carregar informações do usuário:')
+          console.error('   User ID:', userId)
+          console.error('   Código do erro:', userError.code)
+          console.error('   Mensagem:', userError.message)
+          console.error('   Detalhes:', userError.details)
+          console.error('   Hint:', userError.hint)
         }
       }
 
       if (userData) {
-        // Garante que is_sindico seja um booleano (pode ser null se o campo não existir)
+        // IMPORTANTE: A tabela users pode ter 'role' ou a RPC pode retornar 'user_role'
+        // Garante que sempre tenha 'role' normalizado
+        const roleValue = userData.role || userData.user_role
         const userInfoWithDefaults = {
           ...userData,
+          role: roleValue?.toLowerCase() || roleValue, // Normaliza o role para lowercase
+          user_role: roleValue, // Mantém também user_role para compatibilidade
           is_sindico: userData.is_sindico === true // Converte para boolean explícito
         }
         console.log('========================================')
-        console.log('UserInfo carregado do banco:', userInfoWithDefaults)
-        console.log('Role:', userInfoWithDefaults.role)
-        console.log('is_sindico (tipo):', typeof userInfoWithDefaults.is_sindico)
-        console.log('is_sindico (valor):', userInfoWithDefaults.is_sindico)
-        console.log('É síndico?', userInfoWithDefaults.role === 'zelador' && userInfoWithDefaults.is_sindico === true)
+        console.log('✅ UserInfo carregado do banco:')
+        console.log('   User ID:', userId)
+        console.log('   Role (original):', userData.role)
+        console.log('   Role (normalizado):', userInfoWithDefaults.role)
+        console.log('   Condominio ID:', userInfoWithDefaults.condominio_id)
+        console.log('   Unidade:', userInfoWithDefaults.unidade)
+        console.log('   is_sindico (tipo):', typeof userInfoWithDefaults.is_sindico)
+        console.log('   is_sindico (valor):', userInfoWithDefaults.is_sindico)
+        console.log('   É síndico?', userInfoWithDefaults.role === 'zelador' && userInfoWithDefaults.is_sindico === true)
+        console.log('   Dados completos:', JSON.stringify(userInfoWithDefaults, null, 2))
         console.log('========================================')
         setUserInfo(userInfoWithDefaults)
+        setLoadingUserInfo(false)
         return
+      } else {
+        console.error('❌ ERRO: userData é null ou undefined!')
+        console.error('   userId:', userId)
+        console.error('   userError:', userError)
+        setLoadingUserInfo(false)
       }
 
       // Se não encontrou, tenta usar a função get_user_info
@@ -79,7 +105,20 @@ function App() {
         if (functionError) {
           console.warn('Função get_user_info não disponível:', functionError.message)
         } else if (functionData && functionData.length > 0) {
-          setUserInfo(functionData[0])
+          // IMPORTANTE: A função RPC retorna user_role, não role
+          const rpcData = functionData[0]
+          const rpcUserInfo = {
+            ...rpcData,
+            role: (rpcData.user_role || rpcData.role)?.toLowerCase(), // Mapeia user_role para role
+            user_role: rpcData.user_role, // Mantém também user_role para compatibilidade
+            is_sindico: rpcData.is_sindico === true
+          }
+          console.log('✅ UserInfo carregado via RPC:')
+          console.log('   Dados originais:', rpcData)
+          console.log('   Dados mapeados:', rpcUserInfo)
+          console.log('   Role final:', rpcUserInfo.role)
+          setUserInfo(rpcUserInfo)
+          setLoadingUserInfo(false)
           return
         }
       } catch (rpcError) {
@@ -89,10 +128,12 @@ function App() {
       // Se chegou aqui, não encontrou informações - define valores padrão
       console.warn('Não foi possível carregar informações do usuário. Usando valores padrão.')
       setUserInfo({ role: null, condominio_id: null, unidade: null, is_sindico: false })
+      setLoadingUserInfo(false)
     } catch (err) {
       console.error('Erro inesperado ao carregar informações do usuário:', err)
       // Define valores padrão mesmo em caso de erro
       setUserInfo({ role: null, condominio_id: null, unidade: null, is_sindico: false })
+      setLoadingUserInfo(false)
     }
   }
 
@@ -296,53 +337,81 @@ function App() {
     try {
       // Debug: log das informações do usuário
       console.log('========================================')
-      console.log('RENDERIZANDO DASHBOARD')
+      console.log('🔍 RENDERIZANDO DASHBOARD')
       console.log('userInfo completo:', JSON.stringify(userInfo, null, 2))
       console.log('userInfo.role:', userInfo?.role)
       console.log('userInfo.is_sindico:', userInfo?.is_sindico)
       console.log('Tipo de is_sindico:', typeof userInfo?.is_sindico)
       console.log('user.id:', user?.id)
+      console.log('user.email:', user?.email)
       console.log('========================================')
       
       if (!userInfo || !userInfo.role) {
-        console.log('⚠️ userInfo ou role não disponível, usando Dashboard padrão (Comgás)')
+        console.error('❌ ERRO: userInfo ou role não disponível!')
+        console.error('userInfo:', userInfo)
+        console.error('userInfo?.role:', userInfo?.role)
+        console.error('user?.id:', user?.id)
+        console.error('user?.email:', user?.email)
+        console.error('')
+        console.error('🔧 SOLUÇÃO:')
+        console.error('   1. Verifique se o usuário existe na tabela users:')
+        console.error('      SELECT * FROM users WHERE id = \'' + (user?.id || 'USER_ID') + '\';')
+        console.error('   2. Se não existir, execute criar_usuarios_completo.sql')
+        console.error('   3. Recarregue a página após criar o usuário')
+        console.log('⚠️ Usando Dashboard padrão (Comgás)')
         return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
       }
 
-      // Verifica se é síndico (zelador com flag is_sindico = true)
+      // Normaliza o role para lowercase para comparação
+      const normalizedRole = userInfo.role?.toLowerCase()
+      
+      // Verifica se é síndico (zelador com flag is_sindico = true OU role='sindico')
       // IMPORTANTE: Verifica explicitamente se is_sindico é true (não apenas truthy)
-      const isSindico = userInfo.role === 'zelador' && userInfo.is_sindico === true
-      console.log('Verificação de síndico:', {
+      const isSindico = (normalizedRole === 'zelador' && userInfo.is_sindico === true) || normalizedRole === 'sindico'
+      console.log('🔍 Verificação de síndico:', {
         role: userInfo.role,
+        normalizedRole: normalizedRole,
         is_sindico: userInfo.is_sindico,
-        roleIsZelador: userInfo.role === 'zelador',
+        roleIsZelador: normalizedRole === 'zelador',
+        roleIsSindico: normalizedRole === 'sindico',
         isSindicoCheck: isSindico
       })
 
       if (isSindico) {
-        console.log(' Usuário identificado como Síndico (zelador com is_sindico=true)')
+        console.log('✅ Usuário identificado como SÍNDICO')
+        console.log('📊 Renderizando SindicoDashboard')
         return <SindicoDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
       }
 
       // Se for zelador mas não é síndico
-      if (userInfo.role === 'zelador') {
-        console.log(' Usuário identificado como Zelador (não síndico)')
+      if (normalizedRole === 'zelador') {
+        console.log('✅ Usuário identificado como ZELADOR (não síndico)')
+        console.log('📊 Renderizando ZeladorDashboard')
         return <ZeladorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
       }
 
-      switch (userInfo.role) {
+      // Verifica role específico (já normalizado acima)
+      console.log('🔍 Verificando role específico:', normalizedRole)
+
+      switch (normalizedRole) {
         case 'morador':
-          console.log(' Usuário identificado como Morador')
+          console.log('✅ Usuário identificado como MORADOR')
+          console.log('📊 Renderizando MoradorDashboard')
           return <MoradorDashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
         case 'comgas':
-          console.log(' Usuário identificado como Comgás')
+          console.log('✅ Usuário identificado como COMGÁS')
+          console.log('📊 Renderizando Dashboard (Comgás)')
           return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
         default:
-          console.log('⚠️ Role desconhecido:', userInfo.role, '- usando Dashboard padrão (Comgás)')
+          console.error('❌ ERRO: Role desconhecido ou inválido:', userInfo.role)
+          console.error('📋 Role recebido:', JSON.stringify(userInfo.role))
+          console.error('📋 Tipo do role:', typeof userInfo.role)
+          console.log('⚠️ Usando Dashboard padrão (Comgás)')
           return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
       }
     } catch (error) {
-      console.error('Erro ao renderizar dashboard:', error)
+      console.error('❌ ERRO ao renderizar dashboard:', error)
+      console.error('Stack:', error.stack)
       // Em caso de erro, renderiza o dashboard padrão
       return <Dashboard onLogout={handleLogout} user={user} userInfo={userInfo} />
     }
@@ -360,6 +429,11 @@ function App() {
         ) : (
           <Login onLogin={handleLogin} onShowSignup={() => setShowSignup(true)} />
         )
+      ) : loadingUserInfo ? (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', flexDirection: 'column' }}>
+          <div style={{ fontSize: '18px', marginBottom: '20px' }}>Carregando informações do usuário...</div>
+          <div style={{ fontSize: '14px', color: '#666' }}>Aguarde enquanto verificamos seu perfil</div>
+        </div>
       ) : (
         renderDashboard()
       )}

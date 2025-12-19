@@ -573,9 +573,24 @@ function UserManagement({ userInfo }) {
       
       // Salva o token no localStorage para referência
       localStorage.setItem(`qr_signup_token_${userInfo.condominio_id}`, token)
-      setQrCodeData(qrData)
+      
+      // Gera a URL completa que redireciona para a tela de cadastro
+      const qrEncoded = encodeURIComponent(qrData)
+      // Constrói a URL usando a origem atual
+      // Para aplicações React, geralmente a URL base é a origem + o caminho base
+      const baseUrl = window.location.origin
+      const pathname = window.location.pathname
+      // Remove o nome do arquivo (ex: index.html) se houver, mantendo apenas o caminho base
+      const basePath = pathname.includes('/') && pathname !== '/' 
+        ? pathname.substring(0, pathname.lastIndexOf('/')) 
+        : ''
+      const qrCodeUrl = `${baseUrl}${basePath}/?signup=true&qr=${qrEncoded}`
+      
+      // Salva os dados JSON para exibição e a URL para o QR Code
+      setQrCodeData(qrCodeUrl)
       setError('') // Limpa qualquer erro anterior
-      console.log('QR Code gerado com sucesso! Dados:', qrData)
+      console.log('QR Code gerado com sucesso! URL:', qrCodeUrl)
+      console.log('Dados JSON:', qrData)
     } catch (err) {
       console.error('Erro ao gerar QR Code:', err)
       setError('Erro ao gerar QR Code. Tente novamente.')
@@ -689,10 +704,10 @@ function UserManagement({ userInfo }) {
                     Este QR Code expira em 30 dias. Compartilhe com os moradores para que eles se cadastrem e sejam automaticamente associados ao condomínio.
                   </p>
                   <p className="qr-instructions">
-                    <strong>Como usar:</strong> O morador deve escanear este QR Code e será direcionado para a página de cadastro com o condomínio já pré-preenchido.
+                    <strong>Como usar:</strong> O morador deve escanear este QR Code e será direcionado automaticamente para a página de cadastro com o condomínio já pré-preenchido.
                   </p>
                   <div style={{ marginTop: '15px', padding: '10px', backgroundColor: '#f5f5f5', borderRadius: '5px', wordBreak: 'break-all' }}>
-                    <p style={{ margin: '0 0 5px 0', fontSize: '12px', fontWeight: 'bold' }}>Código do QR Code (para testes):</p>
+                    <p style={{ margin: '0 0 5px 0', fontSize: '12px', fontWeight: 'bold' }}>URL do QR Code (para testes):</p>
                     <code style={{ fontSize: '11px', color: '#666' }}>{qrCodeData}</code>
                   </div>
                 </div>

@@ -28,7 +28,7 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
   const [dbConnected, setDbConnected] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [loadingDevices, setLoadingDevices] = useState(false)
-  const [activeTab, setActiveTab] = useState('dashboard')
+  const [activeTab, setActiveTab] = useState('costs')
   const clientRef = useRef(null)
   const maxHistoryPoints = 50
   const maxHistoryLoad = 100
@@ -95,6 +95,129 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
         setDbConnected(false)
       }
     }
+  }
+
+  // Função para salvar dados agregados (médias de temperatura e totais) no banco
+  const saveAggregatedData = async () => {
+    return new Promise((resolve) => {
+      setHistoryData(currentHistory => {
+        setSensorData(currentSensor => {
+          if (!deviceId || !userInfo?.condominio_id || currentHistory.length === 0) {
+            console.log('⏸️ Aguardando dados para salvar agregados (Sindico):', { 
+              deviceId, 
+              condominio_id: userInfo?.condominio_id, 
+              historyLength: currentHistory.length 
+            })
+            resolve()
+            return currentSensor
+          }
+
+          (async () => {
+            try {
+              // Calcula médias das temperaturas
+              const tempIdaMedia = currentHistory.reduce((sum, p) => sum + (p.temp_ida || 0), 0) / currentHistory.length
+              const tempRetornoMedia = currentHistory.reduce((sum, p) => sum + (p.temp_retorno || 0), 0) / currentHistory.length
+              const deltaTMedia = currentHistory.reduce((sum, p) => sum + (p.deltaT || 0), 0) / currentHistory.length
+
+              // Calcula totais acumulados
+              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
+              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
+              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
+              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
+
+              const hoje = new Date().toISOString().split('T')[0]
+
+              const { data: existing, error: checkError } = await supabase
+                .from('consumo_acumulado')
+                .select('id, energia_total_kwh, potencia_total_kw, gas_total_m3, vazao_total_l')
+                .eq('condominio_id', userInfo.condominio_id)
+                .eq('device_id', deviceId)
+                .eq('data', hoje)
+                .single()
+
+              if (checkError && checkError.code !== 'PGRST116') {
+                console.error('❌ Erro ao verificar dados agregados (Sindico):', checkError)
+                resolve()
+                return
+              }
+
+              const updateData = {
+                energia_total_kwh: Math.max(parseFloat(existing?.energia_total_kwh) || 0, energiaTotal),
+                potencia_total_kw: (parseFloat(existing?.potencia_total_kw) || 0) + potenciaTotal,
+                gas_total_m3: (parseFloat(existing?.gas_total_m3) || 0) + gasTotal,
+                vazao_total_l: (parseFloat(existing?.vazao_total_l) || 0) + vazaoTotal,
+                updated_at: new Date().toISOString()
+              }
+
+              if (existing) {
+                const { error: updateError } = await supabase
+                  .from('consumo_acumulado')
+                  .update(updateData)
+                  .eq('id', existing.id)
+
+                if (updateError) {
+                  console.error('❌ Erro ao atualizar dados agregados (Sindico):', updateError)
+                } else {
+                  console.log('✅ Dados agregados atualizados (Sindico):', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              } else {
+                const { error: insertError } = await supabase
+                  .from('consumo_acumulado')
+                  .insert({
+                    condominio_id: userInfo.condominio_id,
+                    device_id: deviceId,
+                    data: hoje,
+                    ...updateData
+                  })
+
+                if (insertError) {
+                  console.error('❌ Erro ao inserir dados agregados (Sindico):', insertError)
+                } else {
+                  console.log('✅ Dados agregados salvos (Sindico):', {
+                    tempIdaMedia: tempIdaMedia.toFixed(2),
+                    tempRetornoMedia: tempRetornoMedia.toFixed(2),
+                    deltaTMedia: deltaTMedia.toFixed(2),
+                    ...updateData
+                  })
+                }
+              }
+
+              // Salva leitura agregada com médias
+              const { error: insertReadingError } = await supabase
+                .from('leituras_sensores')
+                .insert({
+                  device_id: deviceId,
+                  temp_ida: parseFloat(tempIdaMedia.toFixed(2)),
+                  temp_retorno: parseFloat(tempRetornoMedia.toFixed(2)),
+                  deltat: parseFloat(deltaTMedia.toFixed(2)),
+                  vazao_l_s: parseFloat((vazaoTotal / (currentHistory.length * 30)).toFixed(2)),
+                  potencia_kw: parseFloat((potenciaTotal / currentHistory.length).toFixed(4)),
+                  energia_kwh: parseFloat(energiaTotal.toFixed(4))
+                })
+
+              if (insertReadingError) {
+                console.error('❌ Erro ao salvar leitura agregada (Sindico):', insertReadingError)
+              } else {
+                console.log('✅ Leitura agregada salva com médias (Sindico)')
+              }
+
+              resolve()
+            } catch (err) {
+              console.error('❌ Erro ao salvar dados agregados (Sindico):', err)
+              resolve()
+            }
+          })()
+          
+          return currentSensor
+        })
+        return currentHistory
+      })
+    })
   }
 
   // Função para salvar dados acumulados no banco de dados
@@ -211,7 +334,7 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
         const potenciaTotal = data.reduce((sum, item) => sum + (parseFloat(item.potencia_kw) || 0), 0)
         const gasTotal = data.reduce((sum, item) => sum + ((parseFloat(item.potencia_kw) || 0) * 0.1), 0)
         const intervaloMedicao = 30
-        const vazaoTotal = data.reduce((sum, item) => sum + ((parseFloat(item.vazao_l_s) || 0) * intervaloMedicao), 0)
+        const vazaoTotal = data.reduce((sum, item) => sum + (((parseFloat(item.vazao_l_s) || 0) * 100) * intervaloMedicao), 0) // Multiplicado por 100
 
         setAccumulatedValues({
           energiaTotal: energiaTotal,
@@ -248,7 +371,7 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
           temp_ida: parseFloat(item.temp_ida) || 0,
           temp_retorno: parseFloat(item.temp_retorno) || 0,
           deltaT: parseFloat(item.deltat) || 0,
-          vazao: parseFloat(item.vazao_l_s) || 0,
+            vazao: (parseFloat(item.vazao_l_s) || 0) * 100, // Multiplicado por 100
           potencia: parseFloat(item.potencia_kw) || 0,
           energia: parseFloat(item.energia_kwh) || 0,
           gas: (parseFloat(item.potencia_kw) || 0) * 0.1
@@ -265,33 +388,109 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
   }
 
   const loadAvailableDevices = async () => {
-    if (!userInfo) return
+    if (!userInfo) {
+      console.log('⏸️ userInfo não disponível (Sindico), aguardando...')
+      return
+    }
+    
     setLoadingDevices(true)
     try {
+      console.log('🔍 Carregando dispositivos (Sindico)...', {
+        role: userInfo.role,
+        condominio_id: userInfo.condominio_id,
+        is_sindico: userInfo.is_sindico
+      })
+      
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Timeout')), 8000)
       )
-      let query = supabase
-        .from('dispositivos')
-        .select('device_id, unidade, localizacao, condominio_id, condominios(nome)')
-      if (userInfo.role === 'zelador' && userInfo.condominio_id) {
-        query = query.eq('condominio_id', userInfo.condominio_id)
+      
+      // Primeiro tenta usar a função RPC (não passa por RLS, evita recursão)
+      let data = null
+      let error = null
+      
+      if (userInfo.condominio_id) {
+        console.log('📋 Tentando usar função RPC get_dispositivos_by_condominio...')
+        try {
+          const rpcPromise = supabase.rpc('get_dispositivos_by_condominio', {
+            p_condominio_id: userInfo.condominio_id
+          })
+          const rpcResult = await Promise.race([rpcPromise, timeoutPromise])
+          
+          if (rpcResult.data) {
+            // Formatar dados da RPC para o formato esperado
+            data = rpcResult.data.map(item => ({
+              device_id: item.device_id,
+              unidade: item.unidade,
+              localizacao: item.localizacao,
+              condominio_id: item.condominio_id,
+              condominios: item.nome_condominio ? { nome: item.nome_condominio } : null
+            }))
+            console.log('✅ Dispositivos carregados via RPC (Sindico):', data.length, 'dispositivo(s)')
+          } else {
+            error = rpcResult.error
+          }
+        } catch (rpcError) {
+          console.warn('⚠️ Função RPC não disponível, tentando query direta...', rpcError)
+          // Se RPC falhar, tenta query direta
+          let query = supabase
+            .from('dispositivos')
+            .select('device_id, unidade, localizacao, condominio_id, condominios(nome)')
+          
+          if ((userInfo.role === 'zelador' || userInfo.is_sindico) && userInfo.condominio_id) {
+            query = query.eq('condominio_id', userInfo.condominio_id)
+            console.log('📋 Filtrando dispositivos por condominio_id:', userInfo.condominio_id)
+          }
+          
+          const queryPromise = query.order('device_id')
+          const queryResult = await Promise.race([queryPromise, timeoutPromise])
+          data = queryResult.data
+          error = queryResult.error
+        }
+      } else {
+        // Se não tem condominio_id, tenta query direta
+        let query = supabase
+          .from('dispositivos')
+          .select('device_id, unidade, localizacao, condominio_id, condominios(nome)')
+        
+        const queryPromise = query.order('device_id')
+        const queryResult = await Promise.race([queryPromise, timeoutPromise])
+        data = queryResult.data
+        error = queryResult.error
       }
-      const queryPromise = query.order('device_id')
-      const { data, error } = await Promise.race([queryPromise, timeoutPromise])
+      
       if (error) {
-        console.error('Erro ao carregar dispositivos:', error)
+        console.error('❌ Erro ao carregar dispositivos (Sindico):', error)
+        console.error('   Código:', error.code)
+        console.error('   Mensagem:', error.message)
       } else if (data && data.length > 0) {
         setAvailableDevices(data)
+        console.log('✅ Dispositivos carregados (Sindico):', data.length, 'dispositivo(s)')
+        console.log('📋 Dispositivos:', data.map(d => ({ device_id: d.device_id, unidade: d.unidade, localizacao: d.localizacao })))
+        
         if (!deviceId) {
-          setDeviceId(data[0].device_id)
+          const selectedDeviceId = data[0].device_id
+          setDeviceId(selectedDeviceId)
+          console.log('✅ deviceId selecionado automaticamente (Sindico):', selectedDeviceId)
+          console.log('📋 deviceId agora está disponível para salvar dados!')
+          
           if (data[0].condominios) {
             setCondominio(data[0].condominios.nome)
           }
+        } else {
+          console.log('ℹ️ deviceId já está configurado (Sindico):', deviceId)
         }
+      } else {
+        console.error('❌ ERRO: Nenhum dispositivo disponível para este usuário (Sindico)!')
+        console.error('📋 userInfo:', userInfo)
+        console.error('📋 Role:', userInfo.role)
+        console.error('📋 Condominio ID:', userInfo.condominio_id)
+        console.error('📋 is_sindico:', userInfo.is_sindico)
+        console.error('📋 Verifique se há dispositivos cadastrados para o condomínio:', userInfo?.condominio_id)
+        console.error('📋 Execute o script dados_exemplo_automatico.sql para criar dispositivos')
       }
     } catch (err) {
-      console.error('Erro ao carregar dispositivos:', err)
+      console.error('❌ Erro inesperado ao carregar dispositivos (Sindico):', err)
     } finally {
       setLoadingDevices(false)
     }
@@ -299,7 +498,14 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
 
   useEffect(() => {
     if (userInfo) {
+      console.log('🔄 useEffect: userInfo disponível, carregando dispositivos (Sindico)...', {
+        role: userInfo.role,
+        condominio_id: userInfo.condominio_id,
+        is_sindico: userInfo.is_sindico
+      })
       loadAvailableDevices()
+    } else {
+      console.log('⏸️ useEffect: userInfo não disponível ainda (Sindico)')
     }
   }, [userInfo])
 
@@ -349,32 +555,12 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
       }
     }, 30 * 1000) // 30 segundos
 
-    // Configura intervalo de 5 minutos para salvar dados acumulados
+    // Configura intervalo de 1 minuto para salvar dados agregados (médias e totais)
     accumulatedIntervalRef.current = setInterval(() => {
-      const calcularESalvarAcumulados = () => {
-        setHistoryData(currentHistory => {
-          if (currentHistory.length > 0) {
-            setSensorData(currentSensor => {
-              const energiaTotal = Math.max(...currentHistory.map(p => p.energia || 0), currentSensor.energia_kWh || 0)
-              const potenciaTotal = currentHistory.reduce((total, ponto) => total + (ponto.potencia || 0), 0)
-              const gasTotal = currentHistory.reduce((total, ponto) => total + (ponto.gas || 0), 0)
-              const vazaoTotal = currentHistory.reduce((total, ponto) => total + ((ponto.vazao || 0) * 30), 0)
-
-              console.log('💾 Salvando dados acumulados no banco (Sindico)...', {
-                energiaTotal: energiaTotal.toFixed(2),
-                potenciaTotal: potenciaTotal.toFixed(2),
-                gasTotal: gasTotal.toFixed(4),
-                vazaoTotal: vazaoTotal.toFixed(2)
-              })
-              saveAccumulatedValues(energiaTotal, potenciaTotal, gasTotal, vazaoTotal)
-              return currentSensor
-            })
-          }
-          return currentHistory
-        })
-      }
-      calcularESalvarAcumulados()
-    }, 5 * 60 * 1000) // 5 minutos
+      console.log('⏰ Intervalo de salvamento de dados agregados executado (Sindico)')
+      // Salva dados agregados com médias de temperatura e totais
+      saveAggregatedData()
+    }, 1 * 60 * 1000) // 1 minuto
 
     return () => {
       if (saveIntervalRef.current) {
@@ -417,7 +603,7 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
             temp_ida: data.temp_ida === -127 ? 0 : data.temp_ida,
             temp_retorno: data.temp_retorno === -127 ? 0 : data.temp_retorno,
             deltaT: data.deltaT || 0,
-            vazao_L_s: data.vazao_L_s || 0,
+            vazao_L_s: (data.vazao_L_s || 0) * 100, // Multiplicado por 100
             potencia_kW: data.potencia_kW || 0,
             energia_kWh: data.energia_kWh || 0
           }
@@ -442,11 +628,47 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
             const newData = [...prev, historyPoint]
             const sliced = newData.slice(-maxHistoryPoints)
             console.log('✅ Histórico atualizado (Sindico):', sliced.length, 'pontos')
+            console.log('📊 Último ponto do histórico:', historyPoint)
             return sliced
           })
           
-          // Armazena os dados mais recentes para salvar a cada 30 segundos (opcional)
+          // Armazena os dados mais recentes para salvar a cada 30 segundos (backup)
           pendingDataRef.current = processedData
+          
+          // Salva imediatamente no banco quando chegam dados MQTT (se deviceId estiver disponível)
+          console.log('🔍 Verificando deviceId antes de salvar (Sindico):', {
+            deviceId: deviceId,
+            hasDeviceId: !!deviceId,
+            userInfo: userInfo,
+            availableDevices: availableDevices?.length || 0
+          })
+          
+          if (deviceId) {
+            console.log('💾 Tentando salvar dados MQTT no banco (Sindico)...')
+            saveToDatabase(processedData)
+              .then((result) => {
+                console.log('✅ Dados MQTT salvos imediatamente no banco (Sindico)', result)
+                // Após salvar, verifica se deve salvar dados agregados (a cada 10 leituras)
+                setHistoryData(currentHistory => {
+                  if (currentHistory.length >= 10 && currentHistory.length % 10 === 0) {
+                    console.log('📊 Salvando dados agregados após 10 leituras (Sindico)...')
+                    setTimeout(() => saveAggregatedData(), 1000)
+                  }
+                  return currentHistory
+                })
+              })
+              .catch(err => {
+                console.error('❌ ERRO ao salvar dados MQTT imediatamente (Sindico):', err)
+                console.error('   Stack:', err.stack)
+              })
+          } else {
+            console.error('❌ ERRO: deviceId não disponível (Sindico)!')
+            console.error('   deviceId:', deviceId)
+            console.error('   userInfo:', userInfo)
+            console.error('   availableDevices:', availableDevices)
+            console.error('   → Os dados MQTT serão salvos quando deviceId estiver configurado')
+            console.error('   → Verifique se há dispositivos cadastrados para o condomínio:', userInfo?.condominio_id)
+          }
         } catch (error) {
           console.error('Erro ao parsear JSON:', error)
         }
@@ -513,9 +735,10 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
     ? accumulatedValues.potenciaTotal.toFixed(2) 
     : potenciaTotalCalculada.toFixed(2)
   
-  const vazaoAcumulada = accumulatedValues.vazaoTotal > 0 
+  // Garante que vazaoAcumulada sempre tenha um valor válido
+  const vazaoAcumulada = (accumulatedValues.vazaoTotal > 0 
     ? accumulatedValues.vazaoTotal 
-    : vazaoAcumuladaCalculada
+    : vazaoAcumuladaCalculada) || 0
 
   return (
     <div className="dashboard-container">
@@ -615,8 +838,12 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
                 <div className="kpi-value">{energiaTotal} kWh</div>
               </div>
               <div className="kpi-card">
+                <div className="kpi-label">Vazão Atual</div>
+                <div className="kpi-value">{(sensorData.vazao_L_s || 0).toFixed(2)} L/s</div>
+              </div>
+              <div className="kpi-card">
                 <div className="kpi-label">Vazão Acumulada</div>
-                <div className="kpi-value">{vazaoAcumulada.toFixed(2)} L</div>
+                <div className="kpi-value">{typeof vazaoAcumulada === 'number' ? vazaoAcumulada.toFixed(2) : '0.00'} L</div>
               </div>
             </div>
             <div className="charts-grid">
@@ -767,8 +994,22 @@ function SindicoDashboard({ onLogout, user, userInfo }) {
           </>
         )}
 
-        {activeTab === 'history' && <ConsumptionHistory deviceId={deviceId} userInfo={userInfo} historyData={historyData} />}
-        {activeTab === 'costs' && <CostManagement deviceId={deviceId} userInfo={userInfo} historyData={historyData} />}
+        {activeTab === 'history' && (
+          <ConsumptionHistory 
+            key={`history-${deviceId}-${historyData.length}`}
+            deviceId={deviceId} 
+            userInfo={userInfo} 
+            historyData={historyData} 
+          />
+        )}
+        {activeTab === 'costs' && (
+          <CostManagement 
+            key={`costs-${deviceId}-${historyData.length}`}
+            deviceId={deviceId} 
+            userInfo={userInfo} 
+            historyData={historyData} 
+          />
+        )}
         {activeTab === 'alerts' && <AlertsManagement deviceId={deviceId} userInfo={userInfo} historyData={historyData} />}
         {activeTab === 'users' && <UserManagement userInfo={userInfo} />}
       </main>
